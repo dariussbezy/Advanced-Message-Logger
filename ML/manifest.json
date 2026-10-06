@@ -1,0 +1,8 @@
+{
+  "name": "Basic Message Logger",
+  "description": "A simple message logger inspired by the Vencord version. Deleted messages stay visible in red, and edited ones show their previous text in gray. Open the plugin settings to choose what to keep.",
+  "authors": [{ "name": "dariussbezy" }],
+  "main": "index.js",
+  "hash": "618dda1cde0db025bec7de556b95d4af7c66b3ba462f8c12c8e9f5c8710d4d29",
+  "vendetta": { "icon": "ic_message_edit" }
+}

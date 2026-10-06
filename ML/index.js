@@ -32,6 +32,7 @@
   let appStateSub = null;
   let MessageStore;
   let UserStore;
+  let debugInfo = "";
 
   const cfg = () => plugin.storage;
   const toast = (t) => { try { ui.toasts.showToast(t); } catch (_) {} };
@@ -279,6 +280,24 @@
     return out;
   }
 
+  function snapshot(v) {
+    try { const j = JSON.stringify(v); return j === undefined ? "undefined" : j.slice(0, 300); } catch (_) { return String(v); }
+  }
+
+  function tintRoleStyle(rs, color) {
+    if (!rs || typeof rs !== "object") return rs;
+    const copy = Array.isArray(rs) ? rs.slice() : { ...rs };
+    let hit = false;
+    for (const k of Object.keys(copy)) {
+      if (!/color/i.test(k)) continue;
+      const val = copy[k];
+      if (typeof val === "string") { copy[k] = color; hit = true; }
+      else if (Array.isArray(val) && val.every((x) => typeof x === "string")) { copy[k] = val.map(() => color); hit = true; }
+    }
+    if (!hit && !Array.isArray(copy)) copy.colorString = color;
+    return copy;
+  }
+
   function decorate(row, input) {
     if (!row || !row.message) return;
     const rowType = input && input.rowType !== undefined ? input.rowType : row.rowType;
@@ -292,7 +311,20 @@
     const red = pc ? pc(RED) : null;
     const grey = pc ? pc(GREY) : null;
 
-    if (isDeleted && cfg().redName) m.colorString = RED;
+    if (isDeleted && cfg().redName) {
+      const au = m.author || {};
+      const primitives = [];
+      for (const k of Object.keys(row)) {
+        const v = row[k];
+        if (v === null || ["string", "number", "boolean"].includes(typeof v)) primitives.push(k + "=" + v);
+      }
+      debugInfo = "roleStyle: " + snapshot(row.roleStyle) +
+        "\nrow: " + primitives.join(", ") +
+        "\nmsg: colorString=" + snapshot(m.colorString) + ", nick=" + snapshot(m.nick) + ", username=" + snapshot(m.username) +
+        "\nauthor: " + Object.keys(au).slice(0, 40).join(",");
+      m.colorString = RED;
+      if (row.roleStyle && typeof row.roleStyle === "object") row.roleStyle = tintRoleStyle(row.roleStyle, RED);
+    }
 
     if (isDeleted && pc) {
       row.backgroundHighlight = { backgroundColor: pc(RED + "26"), gutterColor: red };
@@ -379,6 +411,13 @@
       React.createElement(RN.View, { key: "info", style: { paddingHorizontal: 16, paddingVertical: 12 } },
         React.createElement(RN.Text, { style: { color: "#aaa", fontSize: 13 } }, summary))
     );
+
+    if (debugInfo) {
+      rows.push(
+        React.createElement(RN.View, { key: "debug", style: { paddingHorizontal: 16, paddingVertical: 8 } },
+          React.createElement(RN.Text, { style: { color: "#888", fontSize: 11 }, selectable: true }, debugInfo))
+      );
+    }
 
     rows.push(
       React.createElement(RN.View, { key: "clear", style: { padding: 16 } },

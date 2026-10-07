@@ -279,6 +279,26 @@
     return out;
   }
 
+  function hideMedia(m) {
+    const list = m.attachments;
+    if (Array.isArray(list) && list.length) {
+      let changed = false;
+      const out = list.map((a) => {
+        if (!a || typeof a.filename !== "string" || a.filename.startsWith("SPOILER_")) return a;
+        const c = Object.assign(Object.create(Object.getPrototypeOf(a)), a);
+        c.filename = "SPOILER_" + a.filename;
+        c.spoiler = true;
+        changed = true;
+        return c;
+      });
+      if (changed) m.attachments = out;
+    }
+    const rc = m.customRenderedContent;
+    if (rc && typeof rc === "object" && !rc.hasSpoilerEmbeds) {
+      m.customRenderedContent = { ...rc, hasSpoilerEmbeds: true };
+    }
+  }
+
   function decorate(row, input) {
     if (!row || !row.message) return;
     const rowType = input && input.rowType !== undefined ? input.rowType : row.rowType;
@@ -293,6 +313,8 @@
     const grey = pc ? pc(GREY) : null;
 
     if (isDeleted && cfg().redName && red) { m.colorString = red; m.usernameColor = red; }
+
+    if (isDeleted && cfg().blurMedia) hideMedia(m);
 
     if (isDeleted && pc) {
       row.backgroundHighlight = { backgroundColor: pc(RED + "26"), gutterColor: red };
@@ -341,67 +363,6 @@
     });
   }
 
-  const SCAN_MATCH = /sticker|attach|embed|gif|media|image|video|lottie|thumb|animated/i;
-  const SCAN_SECONDS = 30;
-  let scanning = false;
-  let scanText = "";
-
-  function recordType(found, type, props) {
-    if (!type || typeof type === "string") return;
-    let name = null;
-    let kind = "fn";
-    if (typeof type === "function") {
-      name = type.displayName || type.name;
-    } else if (typeof type === "object") {
-      const inner = type.type || type.render;
-      name = type.displayName || (inner && (inner.displayName || inner.name));
-      kind = "wrapped";
-    }
-    if (!name || !SCAN_MATCH.test(name)) return;
-    let entry = found.get(name);
-    if (!entry) {
-      let keys = "";
-      try { keys = props ? Object.keys(props).slice(0, 10).join(",") : ""; } catch (_) {}
-      entry = { n: 0, kind, keys };
-      found.set(name, entry);
-    }
-    entry.n++;
-  }
-
-  function runScan(done) {
-    if (scanning) return;
-    scanning = true;
-    scanText = "";
-    const found = new Map();
-    const offs = [];
-    const rec = (args) => { try { recordType(found, args[0], args[1]); } catch (_) {} };
-    try {
-      const rt = metro.findByProps("jsx", "jsxs");
-      if (rt) {
-        offs.push(patcher.before("jsx", rt, rec));
-        offs.push(patcher.before("jsxs", rt, rec));
-      }
-    } catch (_) {}
-    try { offs.push(patcher.before("createElement", React, rec)); } catch (_) {}
-    toast("Scanning for " + SCAN_SECONDS + "s: open a chat with stickers and GIFs");
-    setTimeout(() => {
-      for (const o of offs) { try { o(); } catch (_) {} }
-      scanning = false;
-      if (!offs.length) scanText = "Could not hook the renderer.";
-      else if (!found.size) scanText = "Nothing matched. Hooks active: " + offs.length;
-      else {
-        scanText = [...found.entries()]
-          .sort((a, b) => b[1].n - a[1].n)
-          .slice(0, 30)
-          .map(([name, e]) => name + " [" + e.kind + "] x" + e.n + " props: " + e.keys)
-          .join("\n")
-          .slice(0, 3500);
-      }
-      toast("Scan finished, check the plugin settings");
-      try { done(); } catch (_) {}
-    }, SCAN_SECONDS * 1000);
-  }
-
   function Settings() {
     vstorage.useProxy(plugin.storage);
     const [, bump] = React.useState(0);
@@ -410,6 +371,7 @@
     const options = [
       ["logDeleted", "Keep deleted messages", "Deleted messages stay visible in red"],
       ["redName", "Red usernames", "Also color the sender's name red on deleted messages"],
+      ["blurMedia", "Hide media on deleted messages", "Experimental. Attachments and GIF embeds stay hidden until tapped. Stickers are not affected"],
       ["logEdited", "Keep edited messages", "Previous versions appear in gray above the new text"],
       ["persist", "Save across restarts", "Store logged messages on this device"],
       ["skipOwn", "Ignore my messages", "Your own deletes and edits behave normally"],
@@ -442,20 +404,6 @@
     );
 
     rows.push(
-      React.createElement(RN.View, { key: "scan", style: { paddingHorizontal: 16, paddingTop: 8 } },
-        React.createElement(RN.Button, {
-          title: scanning ? "Scanning..." : "Test: scan chat components (" + SCAN_SECONDS + "s)",
-          onPress: () => { runScan(() => bump((x) => x + 1)); bump((x) => x + 1); },
-        }))
-    );
-    if (scanText) {
-      rows.push(
-        React.createElement(RN.View, { key: "scanText", style: { paddingHorizontal: 16, paddingVertical: 8 } },
-          React.createElement(RN.Text, { style: { color: "#888", fontSize: 11 }, selectable: true }, scanText))
-      );
-    }
-
-    rows.push(
       React.createElement(RN.View, { key: "clear", style: { padding: 16 } },
         React.createElement(RN.Button, {
           title: "Clear all logged messages",
@@ -478,6 +426,7 @@
     if (s.logEdited === undefined) s.logEdited = true;
     if (s.persist === undefined) s.persist = false;
     if (s.redName === undefined) s.redName = true;
+    if (s.blurMedia === undefined) s.blurMedia = false;
     if (s.skipOwn === undefined) s.skipOwn = false;
     if (s.skipBots === undefined) s.skipBots = false;
     renderErrors = 0;

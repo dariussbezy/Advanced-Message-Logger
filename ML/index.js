@@ -2,7 +2,7 @@
   "use strict";
   const { metro, patcher, plugin, ui } = vendetta;
   const vstorage = vendetta.storage;
-  const { findByName, findByStoreName } = metro;
+  const { findByName, findByProps, findByStoreName } = metro;
   const { FluxDispatcher, React, ReactNative: RN } = metro.common;
 
   const MAX_EDITS = 5;
@@ -16,6 +16,7 @@
   const MAX_RAW_SIZE = 20000;
   const SAVE_DELAY = 4000;
   const FLAG = 0x20000000;
+  const FLAG_TOGGLE = 0x10000000;
   const RED = "#ED4245";
   const GREY = "#80848E";
   const INLINE = new Set(["text", "strong", "em", "u", "s", "inlineCode"]);
@@ -25,6 +26,9 @@
   const savedDeleted = new Map();
   const rawBuffer = new Map();
   const unpatches = [];
+  const allowDelete = new Set();
+  let ActionSheet;
+  let ChannelStore;
   let renderUnpatch = null;
   let renderErrors = 0;
   let dirty = false;
@@ -151,6 +155,7 @@
   const blocked = () => ({ type: "GHOST_LOGGER_BLOCKED" });
 
   function onDelete(e) {
+    if (allowDelete.delete(e.id)) return null;
     if (!cfg().logDeleted || !e.id) return null;
     const msg = getMessage(e.channelId, e.id);
     if (!msg || shouldSkip(msg)) return null;
@@ -257,6 +262,108 @@
     } catch (_) {}
   }
 
+  function isLogged(id) {
+    return deleted.has(id) || history.has(id);
+  }
+
+  function refreshToggle(msg, channelId, id, guildId) {
+    setTimeout(() => {
+      try {
+        FluxDispatcher.dispatch({
+          type: "MESSAGE_UPDATE",
+          guildId,
+          message: { id, channel_id: channelId, guild_id: guildId, flags: (msg.flags | 0) ^ FLAG_TOGGLE },
+        });
+      } catch (_) {}
+    }, 0);
+  }
+
+  function removeLog(message) {
+    const id = message.id;
+    const channelId = message.channel_id || message.channelId;
+    let guildId;
+    try {
+      ChannelStore = ChannelStore || findByStoreName("ChannelStore");
+      guildId = ChannelStore.getChannel(channelId)?.guild_id;
+    } catch (_) {}
+    const wasDeleted = deleted.has(id);
+    history.delete(id);
+    if (wasDeleted) {
+      deleted.delete(id);
+      savedDeleted.delete(id);
+      allowDelete.add(id);
+      try { FluxDispatcher.dispatch({ type: "MESSAGE_DELETE", id, channelId, guildId }); } catch (_) {}
+    } else {
+      const msg = getMessage(channelId, id);
+      if (msg) refreshToggle(msg, channelId, id, guildId);
+    }
+    markDirty();
+  }
+
+  function findRows(node, seen, depth) {
+    if (!node || typeof node !== "object" || depth > 40 || seen.has(node)) return null;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      const rows = node.filter((e) => e && e.props && typeof e.props.onPress === "function" &&
+        (typeof e.props.message === "string" || typeof e.props.label === "string"));
+      if (rows.length >= 2) return { list: node, rows };
+      for (const c of node) {
+        const r = findRows(c, seen, depth + 1);
+        if (r) return r;
+      }
+      return null;
+    }
+    if (node.props) return findRows(node.props.children, seen, depth + 1);
+    return null;
+  }
+
+  function trashIcon() {
+    try {
+      for (const name of ["ic_trash_24px", "trash", "ic_message_delete", "ic_delete_24px"]) {
+        const id = ui.assets.getAssetIDByName(name);
+        if (id) return id;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function addButton(tree, message) {
+    const found = findRows(tree, new Set(), 0);
+    if (!found) return;
+    const { list, rows } = found;
+    if (list.some((e) => e && e.key === "bml-remove-log")) return;
+    const tpl = rows[0];
+    const label = deleted.has(message.id) ? "Remove logged message" : "Remove edit history";
+    const props = {
+      key: "bml-remove-log",
+      onPress: () => {
+        try { ActionSheet && ActionSheet.hideActionSheet && ActionSheet.hideActionSheet(); } catch (_) {}
+        removeLog(message);
+      },
+    };
+    if (typeof tpl.props.message === "string") props.message = label;
+    if (typeof tpl.props.label === "string") props.label = label;
+    const icon = trashIcon();
+    if (icon && typeof tpl.props.icon === "number") props.icon = icon;
+    const el = React.cloneElement(tpl, props);
+    const at = Math.max(list.indexOf(rows[rows.length - 1]), 0);
+    list.splice(at, 0, el);
+  }
+
+  function hookSheet(args) {
+    try {
+      const [component, key, ctx] = args;
+      const message = ctx && ctx.message;
+      if (key !== "MessageLongPressActionSheet" || !message || !isLogged(message.id)) return;
+      component.then((instance) => {
+        const un = patcher.after("default", instance, (_, tree) => {
+          React.useEffect(() => () => { un(); }, []);
+          try { addButton(tree, message); } catch (_) {}
+        });
+      });
+    } catch (_) {}
+  }
+
   function paint(nodes, color) {
     if (!color) return nodes;
     const out = [];
@@ -286,7 +393,10 @@
     const m = row.message;
     const isDeleted = deleted.has(m.id);
     const h = cfg().logEdited ? history.get(m.id) : null;
-    if (!isDeleted && !h) return;
+    if (!isDeleted && !h) {
+      if (m.__glOut && m.content === m.__glOut) m.content = m.__glBase;
+      return;
+    }
 
     const pc = RN && RN.processColor;
     const red = pc ? pc(RED) : null;
@@ -414,6 +524,10 @@
     catch (_) { return; }
     try { renderUnpatch = patchRender(); } catch (_) {}
     try {
+      ActionSheet = findByProps("openLazy", "hideActionSheet");
+      if (ActionSheet) unpatches.push(patcher.before("openLazy", ActionSheet, hookSheet));
+    } catch (_) {}
+    try {
       appStateSub = RN.AppState.addEventListener("change", (state) => { if (state !== "active") flush(); });
     } catch (_) {}
   }
@@ -428,6 +542,7 @@
     deleted.clear();
     savedDeleted.clear();
     rawBuffer.clear();
+    allowDelete.clear();
   }
 
   return { onLoad, onUnload, settings: Settings };

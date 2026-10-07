@@ -3,6 +3,6 @@
   "description": "A simple message logger inspired by the Vencord version. Open the plugin settings to choose what to keep.",
   "authors": [{ "name": "dariussbezy" }],
   "main": "index.js",
-  "hash": "d0c9d2b4d924b7e11971f50d62622dfa5a8ac9515419fa42d3592942989f7ae2",
+  "hash": "f4aa525235b2ef34942822eb358e82adf8416c0493ab71da10f4aa59b9d97a4a",
   "vendetta": { "icon": "ic_message_edit" }
 }

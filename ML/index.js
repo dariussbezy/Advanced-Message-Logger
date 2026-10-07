@@ -32,6 +32,7 @@
   let appStateSub = null;
   let MessageStore;
   let UserStore;
+  let debugInfo = "";
 
   const cfg = () => plugin.storage;
   const toast = (t) => { try { ui.toasts.showToast(t); } catch (_) {} };
@@ -279,24 +280,36 @@
     return out;
   }
 
-  function hideMedia(m) {
-    const list = m.attachments;
-    if (Array.isArray(list) && list.length) {
-      let changed = false;
-      const out = list.map((a) => {
-        if (!a || typeof a.filename !== "string" || a.filename.startsWith("SPOILER_")) return a;
-        const c = Object.assign(Object.create(Object.getPrototypeOf(a)), a);
-        c.filename = "SPOILER_" + a.filename;
-        c.spoiler = true;
-        changed = true;
-        return c;
-      });
-      if (changed) m.attachments = out;
+  function propNames(obj) {
+    const names = new Set();
+    let o = obj;
+    let depth = 0;
+    while (o && o !== Object.prototype && depth < 4) {
+      for (const n of Object.getOwnPropertyNames(o)) names.add(n);
+      o = Object.getPrototypeOf(o);
+      depth++;
     }
-    const rc = m.customRenderedContent;
-    if (rc && typeof rc === "object" && !rc.hasSpoilerEmbeds) {
-      m.customRenderedContent = { ...rc, hasSpoilerEmbeds: true };
+    return [...names];
+  }
+
+  function snap(v) {
+    try { const j = JSON.stringify(v); return j === undefined ? "undefined" : j.slice(0, 60); } catch (_) { return "?"; }
+  }
+
+  function tintName(row, m, red) {
+    const report = [];
+    for (const n of propNames(m)) {
+      if (!/colou?r|role|nick|name|style/i.test(n)) continue;
+      let v;
+      try { v = m[n]; } catch (_) { continue; }
+      if (typeof v === "function") continue;
+      let note = "";
+      if (/colou?r/i.test(n) && typeof v === "number") { try { m[n] = red; note = "*"; } catch (_) { note = "!"; } }
+      report.push(n + note + "=" + snap(v));
     }
+    const authorNames = m.author ? propNames(m.author).filter((n) => /colou?r|role|nick|name|style/i.test(n)).slice(0, 15) : [];
+    const rowNames = Object.keys(row).filter((n) => /colou?r|role|nick|name|style/i.test(n));
+    debugInfo = "msg: " + report.join(", ") + "\nauthor: " + authorNames.join(",") + "\nrow: " + rowNames.join(",");
   }
 
   function decorate(row, input) {
@@ -312,9 +325,7 @@
     const red = pc ? pc(RED) : null;
     const grey = pc ? pc(GREY) : null;
 
-    if (isDeleted && cfg().redName && red) { m.colorString = red; m.usernameColor = red; }
-
-    if (isDeleted && cfg().blurMedia) hideMedia(m);
+    if (isDeleted && cfg().redName && red) { m.colorString = red; tintName(row, m, red); }
 
     if (isDeleted && pc) {
       row.backgroundHighlight = { backgroundColor: pc(RED + "26"), gutterColor: red };
@@ -371,7 +382,6 @@
     const options = [
       ["logDeleted", "Keep deleted messages", "Deleted messages stay visible in red"],
       ["redName", "Red usernames", "Also color the sender's name red on deleted messages"],
-      ["blurMedia", "Hide media on deleted messages", "Experimental. Attachments and GIF embeds stay hidden until tapped. Stickers are not affected"],
       ["logEdited", "Keep edited messages", "Previous versions appear in gray above the new text"],
       ["persist", "Save across restarts", "Store logged messages on this device"],
       ["skipOwn", "Ignore my messages", "Your own deletes and edits behave normally"],
@@ -403,6 +413,13 @@
         React.createElement(RN.Text, { style: { color: "#aaa", fontSize: 13 } }, summary))
     );
 
+    if (debugInfo) {
+      rows.push(
+        React.createElement(RN.View, { key: "debug", style: { paddingHorizontal: 16, paddingVertical: 8 } },
+          React.createElement(RN.Text, { style: { color: "#888", fontSize: 11 }, selectable: true }, debugInfo))
+      );
+    }
+
     rows.push(
       React.createElement(RN.View, { key: "clear", style: { padding: 16 } },
         React.createElement(RN.Button, {
@@ -426,7 +443,6 @@
     if (s.logEdited === undefined) s.logEdited = true;
     if (s.persist === undefined) s.persist = false;
     if (s.redName === undefined) s.redName = true;
-    if (s.blurMedia === undefined) s.blurMedia = false;
     if (s.skipOwn === undefined) s.skipOwn = false;
     if (s.skipBots === undefined) s.skipBots = false;
     renderErrors = 0;

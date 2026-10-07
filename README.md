@@ -1,6 +1,6 @@
 # Basic Message Logger
 
-A simple message logger for Kettu, inspired by the Vencord version. Deleted and edited messages stay visible in the chat instead of disappearing.
+A simple and stable message logger for Kettu, inspired by the Vencord version. Deleted and edited messages stay visible in the chat instead of disappearing.
 
 ## Features
 

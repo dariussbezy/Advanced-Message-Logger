@@ -31,5 +31,8 @@ Please submit feedback/suggestions in the destinate channel
 
 **Pictures:**
 
+<img width="590" height="887" alt="IMG_0514" src="https://github.com/user-attachments/assets/1813c37f-5bf7-4ab2-93bb-bf1d01877a05" />
+<img width="1179" height="486" alt="IMG_0512" src="https://github.com/user-attachments/assets/6811b98e-b8ff-4b33-9f6e-fb1883375794" />
+<img width="1179" height="1587" alt="IMG_0513" src="https://github.com/user-attachments/assets/badb0cb0-0e23-4ae1-a407-c73ef3a07e3f" />
 <img width="590" height="304" alt="IMG_0515" src="https://github.com/user-attachments/assets/0c33555d-a83e-4bfc-8562-5fcd055409b1" />
 <img width="574" height="303" alt="IMG_0516" src="https://github.com/user-attachments/assets/2bee8a6a-baf6-42c1-b9d0-e44f62358d4c" />

@@ -300,39 +300,55 @@
     markDirty();
   }
 
-  function findRows(node, seen, depth) {
-    if (!node || typeof node !== "object" || depth > 40 || seen.has(node)) return null;
+  function findGroups(node, seen, depth, out) {
+    if (!node || typeof node !== "object" || depth > 40 || seen.has(node)) return;
     seen.add(node);
     if (Array.isArray(node)) {
       const rows = node.filter((e) => e && e.props && typeof e.props.onPress === "function" &&
         (typeof e.props.message === "string" || typeof e.props.label === "string"));
-      if (rows.length >= 2) return { list: node, rows };
-      for (const c of node) {
-        const r = findRows(c, seen, depth + 1);
-        if (r) return r;
-      }
-      return null;
+      if (rows.length) { out.push({ list: node, rows }); return; }
+      for (const c of node) findGroups(c, seen, depth + 1, out);
+      return;
     }
-    if (node.props) return findRows(node.props.children, seen, depth + 1);
-    return null;
+    if (node.props) findGroups(node.props.children, seen, depth + 1, out);
   }
 
-  function trashIcon() {
+  function pickIcon() {
     try {
-      for (const name of ["ic_trash_24px", "trash", "ic_message_delete", "ic_delete_24px"]) {
-        const id = ui.assets.getAssetIDByName(name);
-        if (id) return id;
+      const all = ui.assets.all || {};
+      const names = Object.keys(all);
+      const tests = [
+        /^(ic_)?trash.*(filled|variant|circle|check|x|sweep)/i,
+        /delete.*(forever|sweep|outline|history)/i,
+        /^(ic_)?(clear_all|eraser|broom|sweep)/i,
+        /trash|delete/i,
+      ];
+      for (const t of tests) {
+        const hit = names.find((n) => t.test(n) && n !== "ic_trash_24px" && n !== "trash");
+        if (hit) return ui.assets.getAssetIDByName(hit);
       }
-    } catch (_) {}
-    return null;
+      return ui.assets.getAssetIDByName("ic_trash_24px") || null;
+    } catch (_) { return null; }
+  }
+
+  function withIcon(tpl, id) {
+    const cur = tpl.props.icon;
+    if (!id || cur === undefined) return undefined;
+    if (typeof cur === "number") return id;
+    if (cur && typeof cur === "object" && cur.props && cur.props.source !== undefined) {
+      return React.cloneElement(cur, { source: id });
+    }
+    return undefined;
   }
 
   function addButton(tree, message) {
-    const found = findRows(tree, new Set(), 0);
-    if (!found) return;
-    const { list, rows } = found;
-    if (list.some((e) => e && e.key === "bml-remove-log")) return;
-    const tpl = rows[0];
+    const groups = [];
+    findGroups(tree, new Set(), 0, groups);
+    if (!groups.length) return;
+    if (groups.some((g) => g.list.some((e) => e && e.key === "bml-remove-log"))) return;
+    const last = groups[groups.length - 1];
+    const neutral = groups.length > 1 ? groups[groups.length - 2] : last;
+    const tpl = neutral.rows[0];
     const label = deleted.has(message.id) ? "Remove logged message" : "Remove edit history";
     const props = {
       key: "bml-remove-log",
@@ -343,11 +359,9 @@
     };
     if (typeof tpl.props.message === "string") props.message = label;
     if (typeof tpl.props.label === "string") props.label = label;
-    const icon = trashIcon();
-    if (icon && typeof tpl.props.icon === "number") props.icon = icon;
-    const el = React.cloneElement(tpl, props);
-    const at = Math.max(list.indexOf(rows[rows.length - 1]), 0);
-    list.splice(at, 0, el);
+    const icon = withIcon(tpl, pickIcon());
+    if (icon !== undefined) props.icon = icon;
+    last.list.splice(0, 0, React.cloneElement(tpl, props));
   }
 
   function hookSheet(args) {

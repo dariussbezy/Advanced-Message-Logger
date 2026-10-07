@@ -28,3 +28,8 @@ Then enable the plugin and open its settings to choose what to keep.
 Please report any bugs/crashes so they can be fixed.
 
 Please submit feedback/suggestions in the destinate channel
+
+**Pictures:**
+
+<img width="590" height="304" alt="IMG_0515" src="https://github.com/user-attachments/assets/0c33555d-a83e-4bfc-8562-5fcd055409b1" />
+<img width="574" height="303" alt="IMG_0516" src="https://github.com/user-attachments/assets/2bee8a6a-baf6-42c1-b9d0-e44f62358d4c" />

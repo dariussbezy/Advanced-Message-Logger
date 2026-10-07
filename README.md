@@ -26,4 +26,5 @@ Then enable the plugin and open its settings to choose what to keep.
 ⚠️ Currently in Beta, I am constantly improving it for the best experience.
 
 Please report any bugs/crashes so they can be fixed.
+
 Please submit feedback/suggestions in the destinate channel

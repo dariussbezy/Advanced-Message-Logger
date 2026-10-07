@@ -32,6 +32,7 @@
   let appStateSub = null;
   let MessageStore;
   let UserStore;
+  let debugInfo = "";
 
   const cfg = () => plugin.storage;
   const toast = (t) => { try { ui.toasts.showToast(t); } catch (_) {} };
@@ -279,6 +280,38 @@
     return out;
   }
 
+  function propNames(obj) {
+    const names = new Set();
+    let o = obj;
+    let depth = 0;
+    while (o && o !== Object.prototype && depth < 4) {
+      for (const n of Object.getOwnPropertyNames(o)) names.add(n);
+      o = Object.getPrototypeOf(o);
+      depth++;
+    }
+    return [...names];
+  }
+
+  function snap(v) {
+    try { const j = JSON.stringify(v); return j === undefined ? "undefined" : j.slice(0, 60); } catch (_) { return "?"; }
+  }
+
+  function tintName(row, m, red) {
+    const report = [];
+    for (const n of propNames(m)) {
+      if (!/colou?r|role|nick|name|style/i.test(n)) continue;
+      let v;
+      try { v = m[n]; } catch (_) { continue; }
+      if (typeof v === "function") continue;
+      let note = "";
+      if (/colou?r/i.test(n) && typeof v === "number") { try { m[n] = red; note = "*"; } catch (_) { note = "!"; } }
+      report.push(n + note + "=" + snap(v));
+    }
+    const authorNames = m.author ? propNames(m.author).filter((n) => /colou?r|role|nick|name|style/i.test(n)).slice(0, 15) : [];
+    const rowNames = Object.keys(row).filter((n) => /colou?r|role|nick|name|style/i.test(n));
+    debugInfo = "msg: " + report.join(", ") + "\nauthor: " + authorNames.join(",") + "\nrow: " + rowNames.join(",");
+  }
+
   function decorate(row, input) {
     if (!row || !row.message) return;
     const rowType = input && input.rowType !== undefined ? input.rowType : row.rowType;
@@ -292,7 +325,7 @@
     const red = pc ? pc(RED) : null;
     const grey = pc ? pc(GREY) : null;
 
-    if (isDeleted && cfg().redName && red) m.colorString = red;
+    if (isDeleted && cfg().redName && red) { m.colorString = red; tintName(row, m, red); }
 
     if (isDeleted && pc) {
       row.backgroundHighlight = { backgroundColor: pc(RED + "26"), gutterColor: red };
@@ -379,6 +412,13 @@
       React.createElement(RN.View, { key: "info", style: { paddingHorizontal: 16, paddingVertical: 12 } },
         React.createElement(RN.Text, { style: { color: "#aaa", fontSize: 13 } }, summary))
     );
+
+    if (debugInfo) {
+      rows.push(
+        React.createElement(RN.View, { key: "debug", style: { paddingHorizontal: 16, paddingVertical: 8 } },
+          React.createElement(RN.Text, { style: { color: "#888", fontSize: 11 }, selectable: true }, debugInfo))
+      );
+    }
 
     rows.push(
       React.createElement(RN.View, { key: "clear", style: { padding: 16 } },

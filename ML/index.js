@@ -26,9 +26,10 @@
   const savedDeleted = new Map();
   const rawBuffer = new Map();
   const unpatches = [];
-  const allowDelete = new Set();
+  const allowDelete = new Map();
   let ActionSheet;
   let ChannelStore;
+  let SelectedChannelStore;
   let renderUnpatch = null;
   let renderErrors = 0;
   let dirty = false;
@@ -154,8 +155,13 @@
 
   const blocked = () => ({ type: "GHOST_LOGGER_BLOCKED" });
 
+  function isAllowed(id) {
+    const until = allowDelete.get(id);
+    return !!until && Date.now() < until;
+  }
+
   function onDelete(e) {
-    if (allowDelete.delete(e.id)) return null;
+    if (isAllowed(e.id)) return null;
     if (!cfg().logDeleted || !e.id) return null;
     const msg = getMessage(e.channelId, e.id);
     if (!msg || shouldSkip(msg)) return null;
@@ -165,6 +171,7 @@
 
   function onBulkDelete(e) {
     if (!cfg().logDeleted || !Array.isArray(e.ids)) return null;
+    if (e.ids.length && e.ids.every(isAllowed)) return null;
     const pass = [];
     let kept = 0;
     for (const id of e.ids) {
@@ -280,7 +287,13 @@
 
   function removeLog(message) {
     const id = message.id;
-    const channelId = message.channel_id || message.channelId;
+    let channelId = message.channel_id || message.channelId;
+    if (!channelId) {
+      try {
+        SelectedChannelStore = SelectedChannelStore || findByStoreName("SelectedChannelStore");
+        channelId = SelectedChannelStore.getChannelId();
+      } catch (_) {}
+    }
     let guildId;
     try {
       ChannelStore = ChannelStore || findByStoreName("ChannelStore");
@@ -291,8 +304,18 @@
     if (wasDeleted) {
       deleted.delete(id);
       savedDeleted.delete(id);
-      allowDelete.add(id);
-      try { FluxDispatcher.dispatch({ type: "MESSAGE_DELETE", id, channelId, guildId }); } catch (_) {}
+      allowDelete.set(id, Date.now() + 5000);
+      setTimeout(() => {
+        try { FluxDispatcher.dispatch({ type: "MESSAGE_DELETE", id, channelId, guildId }); } catch (_) {}
+        setTimeout(() => {
+          try {
+            if (getMessage(channelId, id)) {
+              FluxDispatcher.dispatch({ type: "MESSAGE_DELETE_BULK", ids: [id], channelId, guildId });
+            }
+          } catch (_) {}
+          setTimeout(() => allowDelete.delete(id), 5000);
+        }, 300);
+      }, 100);
     } else {
       const msg = getMessage(channelId, id);
       if (msg) refreshToggle(msg, channelId, id, guildId);

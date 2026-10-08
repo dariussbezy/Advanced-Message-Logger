@@ -14,7 +14,7 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = 5;
+  const BUILD = 6;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -531,6 +531,28 @@
           setTimeout(() => {
             openMessagesTab();
             setTimeout(() => {
+              // Use the client's channel router so navigation leaves the
+              // profile tab and enters the actual Kettu conversation route.
+              let routed = false;
+              try {
+                const channelRouter = findByProps("transitionToChannel");
+                if (channelRouter && typeof channelRouter.transitionToChannel === "function") {
+                  channelRouter.transitionToChannel(String(channelId));
+                  routed = true;
+                }
+              } catch (_) {}
+              if (!routed) {
+                try {
+                  const navigationRouter = findByProps("transitionTo");
+                  const path = guildId
+                    ? "/channels/" + String(guildId) + "/" + String(channelId)
+                    : "/channels/@me/" + String(channelId);
+                  if (navigationRouter && typeof navigationRouter.transitionTo === "function") {
+                    navigationRouter.transitionTo(path);
+                    routed = true;
+                  }
+                } catch (_) {}
+              }
               try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
               if (!real) return;
               const actions = findByProps("jumpToMessage");
@@ -538,14 +560,18 @@
                 toast("Could not find Kettu's message navigation action");
                 return;
               }
-              setTimeout(() => {
+              const jumpWhenChannelIsReady = (attemptsLeft) => {
+                if (String(currentChannelId() || "") !== String(channelId) && attemptsLeft > 0) {
+                  return setTimeout(() => jumpWhenChannelIsReady(attemptsLeft - 1), 120);
+                }
                 try {
                   actions.jumpToMessage({ channelId, messageId: real, flash: true, jumpType: "INSTANT" });
                 } catch (_) {
                   try { actions.jumpToMessage(channelId, real, true); }
                   catch (_) { toast("Kettu could not jump to that message"); }
                 }
-              }, 400);
+              };
+              jumpWhenChannelIsReady(25);
           }, 220);
           }, 160);
         }, 250);
@@ -1347,9 +1373,10 @@
       } else {
         rows.push(Btn("remove-final", "Remove ignore", () => {
           if (setIgnore(target.kind, target.id, target.name, false)) {
-            setPendingIgnoreRemoval(null);
-            setIgnoreRemovalStep(1);
-            setScreen("ignored");
+            // Stay on a non-list screen after the destructive button. If the
+            // list were rendered under the same release gesture, the row that
+            // shifted into its place could receive that gesture too.
+            setScreen("ignoredRemoved");
             refreshUI();
           }
         }, RED));
@@ -1357,10 +1384,28 @@
       return rows;
     };
 
+    const ignoredRemovedScreen = () => {
+      const target = pendingIgnoreRemoval;
+      if (!target) return [Btn("removed-back-fallback", "< Back to ignored", () => setScreen("ignored"))];
+      return [
+        Btn("removed-back", "< Back to ignored", () => {
+          setPendingIgnoreRemoval(null);
+          setIgnoreRemovalStep(1);
+          setScreen("ignored");
+          refreshUI();
+        }),
+        h(RN.View, { key: "removed-message", style: { paddingHorizontal: 16, paddingVertical: 16 } },
+          Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, "Ignore removed"),
+          Text({ style: { color: C.sub, fontSize: 14, marginTop: 8 } },
+            "“" + target.name + "” is no longer ignored. Return to the list when you're ready.")),
+      ];
+    };
+
     let content;
     if (screen === "deleted" || screen === "edited") content = loggedScreen(screen);
     else if (screen === "ignored") content = ignoredScreen();
     else if (screen === "ignoredConfirm") content = ignoredConfirmScreen();
+    else if (screen === "ignoredRemoved") content = ignoredRemovedScreen();
     else {
       const ig = ignored();
       const ignoredCount = Object.keys(ig.guilds).length + Object.keys(ig.channels).length + Object.keys(ig.users).length;

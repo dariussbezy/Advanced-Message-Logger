@@ -1,8 +1,14 @@
 {
   "name": "Advanced Message Logger",
   "description": "A message logger inspired by the Vencord version. Open the plugin settings to choose what to keep.",
-  "authors": [{ "name": "dariussbezy" }],
+  "authors": [
+    {
+      "name": "dariussbezy"
+    }
+  ],
   "main": "index.js",
-  "hash": "c5163e83f4ae671b7ef63e102e2518fb25413bcd113c1eaceffbf2c6ef215386",
-  "vendetta": { "icon": "ic_message_edit" }
+  "hash": "16144642df0dd472787a5ffb2d15f501aa1128ca85c7d997c453714bd4236f62",
+  "vendetta": {
+    "icon": "ic_message_edit"
+  }
 }

@@ -44,6 +44,9 @@
   let dirty = false;
   let saveTimer = null;
   let appStateSub = null;
+  let profileRenderUser = null;
+  const profileTypeWrappers = new WeakMap();
+  const profileWrappedTypes = new WeakSet();
 
   const cfg = () => plugin.storage;
   const toast = (t) => { try { ui.toasts.showToast(t); } catch (_) {} };
@@ -452,15 +455,30 @@
 
   function jumpTo(channelId, guildId, messageId, navigation) {
     const real = messageId && !String(messageId).startsWith("test-") ? messageId : null;
-    let settingsClosed = false;
-    try {
-      if (navigation && typeof navigation.goBack === "function") {
-        navigation.goBack();
-        settingsClosed = true;
+    const navigators = [];
+    let current = navigation;
+    for (let depth = 0; current && depth < 5; depth++) {
+      navigators.push(current);
+      try { current = typeof current.getParent === "function" ? current.getParent() : null; }
+      catch (_) { current = null; }
+    }
+    // Close each settings route in order. Navigation state updates between
+    // calls, so repeated immediate goBack() calls only close the top route.
+    const closeSettings = (navigatorIndex, backsOnNavigator) => {
+      if (navigatorIndex >= navigators.length) return selectAfterClose();
+      const nav = navigators[navigatorIndex];
+      let canGoBack = false;
+      try { canGoBack = typeof nav.canGoBack === "function" && nav.canGoBack(); } catch (_) {}
+      if (canGoBack && backsOnNavigator < 8 && typeof nav.goBack === "function") {
+        try { nav.goBack(); } catch (_) {}
+        setTimeout(() => closeSettings(navigatorIndex, backsOnNavigator + 1), 120);
+      } else {
+        closeSettings(navigatorIndex + 1, 0);
       }
-    } catch (_) {}
-    // Let the plugin settings screen close before changing the selected channel.
-    setTimeout(() => {
+    };
+    const selectAfterClose = () => {
+      // Give the final settings screen time to unmount before selecting the DM.
+      setTimeout(() => {
       try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
       if (!real) return;
       const actions = findByProps("jumpToMessage");
@@ -477,7 +495,9 @@
           catch (_) { toast("Kettu could not jump to that message"); }
         }
       }, 150);
-    }, settingsClosed ? 250 : 0);
+      }, 250);
+    };
+    closeSettings(0, 0);
   }
 
   function ask(title, message, buttons) {
@@ -555,13 +575,11 @@
       press: () => flipIgnore(kind, id, name),
     });
     try {
-      const user = ctx.user || ctx.recipient || (ctx.member && ctx.member.user) || (ctx.userId && UserStore.getUser(ctx.userId));
       const channelArg = ctx.channel;
       const channelId = (channelArg && typeof channelArg === "object" && channelArg.id) ||
         (typeof channelArg === "string" && channelArg) || ctx.channelId || ctx.channel_id;
       const channel = channelArg && typeof channelArg === "object" ? channelArg : getChannel(channelId);
       const guild = ctx.guild || (ctx.guildId && GuildStore.getGuild(ctx.guildId));
-      if (/user|profile|member/i.test(key) && user && user.id) return [item("users", user.id, nameOf(user), "user")];
       if (channel && channel.id) {
         const dm = isDM(channel);
         const plan = [item("channels", channel.id, channelLabel(channel.id, channel.guild_id), dm ? "DM" : "channel")];
@@ -573,9 +591,54 @@
         return plan;
       }
       if (guild && guild.id) return [item("guilds", guild.id, guild.name || guild.id, "server")];
-      if (user && user.id) return [item("users", user.id, nameOf(user), "user")];
     } catch (_) {}
     return null;
+  }
+
+  function menuText(value, depth) {
+    if (depth > 6 || value == null) return "";
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) return value.map((v) => menuText(v, depth + 1)).join(" ");
+    if (typeof value !== "object") return "";
+    const p = value.props || value;
+    for (const key of ["label", "message", "text", "title", "defaultMessage", "children", "content"]) {
+      if (p[key] != null) {
+        const text = menuText(p[key], depth + 1);
+        if (text) return text;
+      }
+    }
+    return "";
+  }
+
+  function componentName(type) {
+    if (!type) return "";
+    return type.displayName || type.name || (type.type && (type.type.displayName || type.type.name)) ||
+      (type.render && (type.render.displayName || type.render.name)) || "";
+  }
+
+  function menuTreeSummary(root) {
+    const found = [];
+    const seen = new Set();
+    const walk = (node, depth) => {
+      if (!node || typeof node !== "object" || depth > 18 || seen.has(node) || found.length >= 10) return;
+      seen.add(node);
+      if (Array.isArray(node)) {
+        const labels = node.slice(0, 5).map((e) => menuText(e && (e.props || e), 0)).filter(Boolean);
+        if (labels.length) found.push("rows=" + labels.join("/").slice(0, 100));
+        for (const child of node) walk(child, depth + 1);
+        return;
+      }
+      if (node.props) {
+        const name = componentName(node.type) || "element";
+        const props = node.props;
+        const items = Array.isArray(props.items) ? " items[" + props.items.length + "]" : "";
+        found.push(name + "(" + Object.keys(props).slice(0, 8).join(",") + ")" + items);
+        walk(props.items, depth + 1);
+        walk(props.children, depth + 1);
+      }
+    };
+    try { walk(root, 0); } catch (_) {}
+    return found.join("; ").slice(0, 700);
   }
 
   function findGroups(node, seen, depth, out) {
@@ -584,8 +647,8 @@
     if (Array.isArray(node)) {
       const rows = node.filter((e) => {
         const p = e && (e.props || e);
-        return p && ["onPress", "onSelect", "action", "onClick"].some((k) => typeof p[k] === "function") &&
-          (typeof p.message === "string" || typeof p.label === "string");
+        return p && ["onPress", "onSelect", "action", "onClick", "callback"].some((k) => typeof p[k] === "function") &&
+          !!menuText(p, 0);
       });
       if (rows.length) { out.push({ list: node, rows }); return; }
       for (const c of node) findGroups(c, seen, depth + 1, out);
@@ -636,13 +699,13 @@
     const neutral = groups.length > 1 ? groups[groups.length - 2] : last;
     const tpl = neutral.rows[0];
     const tplProps = tpl.props || tpl;
-    const handlerKeys = ["onPress", "onSelect", "action", "onClick"];
+    const handlerKeys = ["onPress", "onSelect", "action", "onClick", "callback"];
     let anchorGroup = null;
     let anchorRow = null;
     for (const g of groups) {
       const r = g.rows.find((e) => {
         const p = e.props || e;
-        return /^close (dm|group)/i.test(String(p.message || p.label || ""));
+        return /^close (dm|group)/i.test(menuText(p, 0));
       });
       if (r) { anchorGroup = g; anchorRow = r; break; }
     }
@@ -654,8 +717,11 @@
         } catch (_) { toast("Could not apply this logger action"); }
       };
       const props = { key: item.key };
-      if (typeof tplProps.message === "string") props.message = item.label;
-      if (typeof tplProps.label === "string") props.label = item.label;
+      if (tplProps.message != null) props.message = item.label;
+      else if (tplProps.label != null) props.label = item.label;
+      else if (tplProps.text != null) props.text = item.label;
+      else if (tplProps.title != null) props.title = item.label;
+      else if (typeof tplProps.children === "string") props.children = item.label;
       for (const k of handlerKeys) if (typeof tplProps[k] === "function") props[k] = press;
       if (!handlerKeys.some((k) => typeof tplProps[k] === "function")) props.onPress = press;
       const icon = withIcon(tpl, pickIcon(item.icon));
@@ -684,7 +750,7 @@
             const inserted = addButtons(tree, plan);
             if (cfg().devMenus && typeof key === "string") {
               seenMenus.set(key, Object.keys(ctx || {}).slice(0, 8).join(",") +
-                (inserted ? " [inserted in rendered menu]" : " [menu rows not recognized]"));
+                (inserted ? " [inserted in rendered menu]" : " [menu rows not recognized] " + menuTreeSummary(tree)));
               trimMap(seenMenus, 30);
             }
           } catch (_) {}
@@ -707,28 +773,37 @@
       if (!node || typeof node !== "object" || depth > 40 || seen.has(node) || added) return;
       seen.add(node);
       if (node.props) {
-        const type = node.type && (node.type.displayName || node.type.name || (node.type.type && node.type.type.name));
+        const type = componentName(node.type);
         const props = node.props;
-        if (/ContextMenu/i.test(String(type || "")) && Array.isArray(props.items)) {
-          const items = props.items;
+        if (/ContextMenu/i.test(String(type || "")) && props.items && typeof props.items === "object") {
+          const items = Array.isArray(props.items) ? props.items : Object.values(props.items);
+          const appendItem = (item) => {
+            // React freezes element props in some builds. Replace the items
+            // collection instead of mutating the one owned by Discord.
+            props.items = Array.isArray(props.items)
+              ? [...props.items, item]
+              : { ...props.items, [marker]: item };
+            return true;
+          };
           if (!items.some((e) => e && (e.key === marker || e.id === marker || (e.props && e.props.key === marker)))) {
             const sample = items.find((e) => e && (e.props || typeof e.label === "string"));
             if (sample && sample.props) {
               const itemProps = { key: marker, label };
-              const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof sample.props[k] === "function") || "action";
+              const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof sample.props[k] === "function");
+              if (!callback) return false;
               itemProps[callback] = handler;
               if (sample.props.index !== undefined) itemProps.index = items.length;
               if (sample.props.lastInSection !== undefined) itemProps.lastInSection = true;
-              items.push(React.cloneElement(sample, itemProps));
+              if (!appendItem(React.cloneElement(sample, itemProps))) return;
             } else if (sample && typeof sample === "object") {
               const addedItem = { ...sample, key: marker, id: marker, label };
               const callbackKeys = ["onPress", "onSelect", "action", "onClick", "callback"];
               const callbacks = callbackKeys.filter((k) => typeof sample[k] === "function");
-              if (callbacks.length) for (const k of callbacks) addedItem[k] = handler;
-              else addedItem.action = handler;
+              if (!callbacks.length) return false;
+              for (const k of callbacks) addedItem[k] = handler;
               if (sample.index !== undefined) addedItem.index = items.length;
               if (sample.lastInSection !== undefined) addedItem.lastInSection = true;
-              items.push(addedItem);
+              if (!appendItem(addedItem)) return;
             } else {
               return;
             }
@@ -749,16 +824,93 @@
     try {
       const module = findByName("UserProfileOverflowMenu", false);
       if (!module || !module.default) return;
-      unpatches.push(patcher.after("default", module, (args, tree) => {
-        const props = args && args[0] || {};
-        const user = props.user || props.profileUser || (props.userId && UserStore.getUser(props.userId));
-        const added = addProfileIgnore(tree, user);
-        if (cfg().devMenus) {
-          seenMenus.set("UserProfileOverflowMenu", Object.keys(props).slice(0, 8).join(",") + (added ? " [button added]" : " [no button]"));
-          trimMap(seenMenus, 30);
-        }
-      }));
+      const exported = module.default;
+      let original = null;
+      let replace = null;
+      let restore = null;
+      if (typeof exported === "function") {
+        original = exported;
+        replace = (fn) => { module.default = fn; };
+        restore = () => { if (module.default === wrapped) module.default = exported; };
+      } else if (exported && typeof exported.type === "function") {
+        original = exported.type;
+        replace = (fn) => { exported.type = fn; };
+        restore = () => { if (exported.type === wrapped) exported.type = original; };
+      } else if (exported && typeof exported.render === "function") {
+        original = exported.render;
+        replace = (fn) => { exported.render = fn; };
+        restore = () => { if (exported.render === wrapped) exported.render = original; };
+      }
+      if (!original) return;
+      const wrapped = function (...args) {
+        const props = args[0] || {};
+        const previous = profileRenderUser;
+        profileRenderUser = props.user || props.profileUser || (props.userId && UserStore.getUser(props.userId)) || null;
+        try { return original.apply(this, args); }
+        finally { profileRenderUser = previous; }
+      };
+      wrapped.displayName = "UserProfileOverflowMenu";
+      try { Object.assign(wrapped, original); } catch (_) {}
+      replace(wrapped);
+      unpatches.push(restore);
     } catch (_) {}
+  }
+
+  function hookProfileContextMenu(args) {
+    try {
+      const type = args[0];
+      const name = componentName(type);
+      if (name === "UserProfileOverflowMenu") {
+        if (profileWrappedTypes.has(type)) return;
+        if ((typeof type === "function" || (type && typeof type === "object")) && !profileTypeWrappers.has(type)) {
+          let original = type;
+          let field = null;
+          if (typeof type !== "function") {
+            if (typeof type.type === "function") { original = type.type; field = "type"; }
+            else if (typeof type.render === "function") { original = type.render; field = "render"; }
+            else return;
+          }
+          const wrapped = function (...componentArgs) {
+            const props = componentArgs[0] || {};
+            const previous = profileRenderUser;
+            profileRenderUser = props.user || props.profileUser || (props.userId && UserStore.getUser(props.userId)) || null;
+            try { return original.apply(this, componentArgs); }
+            finally { profileRenderUser = previous; }
+          };
+          wrapped.displayName = "UserProfileOverflowMenu";
+          let wrappedType = wrapped;
+          if (field) {
+            wrappedType = { ...type, [field]: wrapped };
+            profileTypeWrappers.set(type, wrappedType);
+          } else profileTypeWrappers.set(type, wrapped);
+          profileWrappedTypes.add(wrappedType);
+          args[0] = wrappedType;
+        } else if (profileTypeWrappers.has(type)) args[0] = profileTypeWrappers.get(type);
+        return;
+      }
+      if (!profileRenderUser || name !== "ContextMenu") return;
+      const originalProps = args[1];
+      if (!originalProps) return;
+      // Replace the JSX props object too; Discord may freeze the original.
+      const props = { ...originalProps };
+      const added = addProfileIgnore({ type: args[0], props }, profileRenderUser);
+      if (added) args[1] = props;
+      if (cfg().devMenus) {
+        seenMenus.set("UserProfileOverflowMenu", "user profile ContextMenu" + (added ? " [item inserted]" : " [ContextMenu items unsupported]"));
+        trimMap(seenMenus, 30);
+      }
+    } catch (_) {}
+  }
+
+  function hookProfileMenuFactories() {
+    try {
+      const jsxRuntime = findByProps("jsx", "jsxs");
+      if (jsxRuntime) {
+        unpatches.push(patcher.before("jsx", jsxRuntime, hookProfileContextMenu));
+        unpatches.push(patcher.before("jsxs", jsxRuntime, hookProfileContextMenu));
+      }
+    } catch (_) {}
+    try { unpatches.push(patcher.before("createElement", React, hookProfileContextMenu)); } catch (_) {}
   }
 
   const seenComps = new Map();
@@ -1125,6 +1277,7 @@
       if (ActionSheet) unpatches.push(patcher.before("openLazy", ActionSheet, hookSheet));
     } catch (_) {}
     hookProfileOverflow();
+    hookProfileMenuFactories();
     if (s.devMenus) startCompScan();
     try {
       appStateSub = RN.AppState.addEventListener("change", (state) => {

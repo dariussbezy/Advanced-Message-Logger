@@ -14,6 +14,7 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
+  const BUILD = 1;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -45,6 +46,10 @@
   let saveTimer = null;
   let appStateSub = null;
   let profileRenderUser = null;
+  let pendingSheetPlan = null;
+  let activeSheetPlan = null;
+  let activeSheetInserted = false;
+  const wrappedSheetModules = new WeakSet();
   const profileTypeWrappers = new WeakMap();
   const profileWrappedTypes = new WeakSet();
 
@@ -457,6 +462,8 @@
     const real = messageId && !String(messageId).startsWith("test-") ? messageId : null;
     const selectAfterClose = () => {
       setTimeout(() => {
+        try { FluxDispatcher.dispatch({ type: "USER_PROFILE_MODAL_CLOSE" }); } catch (_) {}
+        try { FluxDispatcher.dispatch({ type: "USER_SETTINGS_MODAL_CLOSE" }); } catch (_) {}
         try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
         if (!real) return;
         const actions = findByProps("jumpToMessage");
@@ -629,6 +636,10 @@
         found.push(name + "(" + Object.keys(props).slice(0, 8).join(",") + ")" + items);
         walk(props.items, depth + 1);
         walk(props.children, depth + 1);
+      } else {
+        const keys = Object.keys(node).slice(0, 8);
+        if (keys.length) found.push("object(" + keys.join(",") + ")");
+        for (const key of keys) walk(node[key], depth + 1);
       }
     };
     try { walk(root, 0); } catch (_) {}
@@ -642,7 +653,7 @@
       typeof props.label === "string" && typeof props.onPress === "function");
   }
 
-  function addButtons(tree, plan) {
+  function addButtons(tree, plan, requireCloseDM) {
     if (!tree || !plan || !plan.length) return null;
     const markers = new Set(plan.map((item) => item.key));
     let alreadyAdded = false;
@@ -661,7 +672,7 @@
       }
     };
     inspect(tree, 0, new Set());
-    if (alreadyAdded) return null;
+    if (alreadyAdded) return tree;
 
     const makeRows = (template) => plan.map((item) => {
       const original = template.props;
@@ -688,8 +699,10 @@
       seen.add(node);
       if (Array.isArray(node)) {
         const directRows = node.filter(isMenuRow);
-        if (directRows.length) {
-          const closeIndex = node.findIndex((row) => isMenuRow(row) && /^close (dm|group)/i.test(row.props.label));
+        const closeIndex = directRows.length
+          ? node.findIndex((row) => isMenuRow(row) && /^close (dm|group)/i.test(row.props.label))
+          : -1;
+        if (directRows.length && (!requireCloseDM || closeIndex >= 0)) {
           const position = closeIndex >= 0 ? closeIndex + 1 : node.length;
           const next = node.slice();
           next.splice(position, 0, ...makeRows(directRows[0]));
@@ -748,6 +761,9 @@
 
   function hookSheet(args) {
     try {
+      pendingSheetPlan = null;
+      activeSheetPlan = null;
+      activeSheetInserted = false;
       const [component, key, ctx] = args;
       if (!component || typeof component.then !== "function") return;
       const plan = key === "MessageLongPressActionSheet" ? messagePlan(ctx && ctx.message) : scopePlan(key, ctx);
@@ -756,11 +772,21 @@
         trimMap(seenMenus, 30);
       }
       if (!plan || !plan.length) return;
+      pendingSheetPlan = plan;
+      activeSheetPlan = plan;
+      setTimeout(() => {
+        if (pendingSheetPlan === plan) {
+          pendingSheetPlan = null;
+          activeSheetPlan = null;
+          activeSheetInserted = false;
+        }
+      }, 15000);
       component.then((instance) => {
+        wrapSheetComponent(instance);
         const un = patcher.after("default", instance, (_, tree) => {
           React.useEffect(() => () => { un(); }, []);
           try {
-            const updatedTree = addButtons(tree, plan);
+            const updatedTree = addButtons(tree, plan, plan.some((item) => /this DM/i.test(item.label)));
             if (cfg().devMenus && typeof key === "string") {
               seenMenus.set(key, Object.keys(ctx || {}).slice(0, 8).join(",") +
                 (updatedTree ? " [inserted in rendered menu]" : " [menu rows not recognized] " + menuTreeSummary(tree)));
@@ -770,6 +796,35 @@
           } catch (_) {}
         });
       });
+    } catch (_) {}
+  }
+
+  function wrapSheetComponent(module) {
+    try {
+      if (!module || typeof module !== "object" || wrappedSheetModules.has(module)) return;
+      const key = Object.keys(module).find((name) => /ChannelLongPressActionSheetConnected/.test(componentName(module[name]))) || "default";
+      const exported = module[key];
+      let holder = module;
+      let field = key;
+      let original = exported;
+      if (typeof exported !== "function") {
+        if (exported && typeof exported.type === "function") { holder = exported; field = "type"; original = exported.type; }
+        else if (exported && typeof exported.render === "function") { holder = exported; field = "render"; original = exported.render; }
+        else return;
+      }
+      const wrapped = function (...args) {
+        const previous = activeSheetPlan;
+        const previousInserted = activeSheetInserted;
+        activeSheetPlan = pendingSheetPlan || previous;
+        activeSheetInserted = false;
+        try { return original.apply(this, args); }
+        finally { activeSheetPlan = previous; activeSheetInserted = previousInserted; }
+      };
+      wrapped.displayName = componentName(exported) || "ChannelLongPressActionSheetConnected";
+      try { Object.assign(wrapped, original); } catch (_) {}
+      holder[field] = wrapped;
+      wrappedSheetModules.add(module);
+      unpatches.push(() => { if (holder[field] === wrapped) holder[field] = original; });
     } catch (_) {}
   }
 
@@ -826,8 +881,9 @@
             }
           }
         }
-        if (/ContextMenu/i.test(String(type || "")) && Array.isArray(props.children)) {
-          const rows = props.children;
+        if (/ContextMenu/i.test(String(type || "")) && props.children != null) {
+          const hadArrayChildren = Array.isArray(props.children);
+          const rows = hadArrayChildren ? props.children : [props.children];
           const template = rows.find((row) => isMenuRow(row) && /ContextMenuItem/.test(componentName(row.type)));
           if (template) {
             const childProps = {
@@ -844,7 +900,7 @@
             const position = ignoreIndex >= 0 ? ignoreIndex + 1 : blockIndex >= 0 ? blockIndex : rows.length;
             const nextChildren = rows.slice();
             nextChildren.splice(position, 0, React.cloneElement(template, childProps));
-            props.children = nextChildren;
+            props.children = hadArrayChildren ? nextChildren : React.createElement(React.Fragment, null, ...nextChildren);
             added = true;
             return;
           }
@@ -898,6 +954,16 @@
     try {
       const type = args[0];
       const name = componentName(type);
+      if (activeSheetPlan && /ActionSheetRowGroup/.test(name)) {
+        if (activeSheetInserted) return;
+        const currentProps = args[1] || {};
+        const updated = addButtons(currentProps.children, activeSheetPlan, activeSheetPlan.some((item) => /this DM/i.test(item.label)));
+        if (updated && updated !== currentProps.children) {
+          args[1] = { ...currentProps, children: updated };
+          activeSheetInserted = true;
+        }
+        return;
+      }
       if (name === "UserProfileOverflowMenu") {
         if (profileWrappedTypes.has(type)) return;
         if ((typeof type === "function" || (type && typeof type === "object")) && !profileTypeWrappers.has(type)) {
@@ -934,10 +1000,25 @@
       const added = addProfileIgnore({ type: args[0], props }, profileRenderUser);
       if (added) args[1] = props;
       if (cfg().devMenus) {
-        seenMenus.set("UserProfileOverflowMenu", "user profile ContextMenu" + (added ? " [item inserted]" : " [ContextMenu items unsupported]"));
+        seenMenus.set("UserProfileOverflowMenu", "user profile ContextMenu" +
+          (added ? " [item inserted]" : " [item shape not recognized] ") + menuTreeSummary({ type: args[0], props }));
         trimMap(seenMenus, 30);
       }
     } catch (_) {}
+  }
+
+  function hookReactCreateElement(args) {
+    try {
+      if (activeSheetPlan && /ActionSheetRowGroup/.test(componentName(args[0])) && args.length > 2) {
+        const props = { ...(args[1] || {}) };
+        if (props.children === undefined) {
+          props.children = args.length === 3 ? args[2] : args.slice(2);
+          args[1] = props;
+          args.splice(2);
+        }
+      }
+    } catch (_) {}
+    hookProfileContextMenu(args);
   }
 
   function hookProfileMenuFactories() {
@@ -948,7 +1029,7 @@
         unpatches.push(patcher.before("jsxs", jsxRuntime, hookProfileContextMenu));
       }
     } catch (_) {}
-    try { unpatches.push(patcher.before("createElement", React, hookProfileContextMenu)); } catch (_) {}
+    try { unpatches.push(patcher.before("createElement", React, hookReactCreateElement)); } catch (_) {}
   }
 
   const seenComps = new Map();
@@ -1289,6 +1370,8 @@
       }
     }
 
+    content.unshift(h(RN.View, { key: "build", style: { paddingHorizontal: 16, paddingTop: 8 } },
+      Text({ style: { color: C.sub, fontSize: 11 } }, "Build " + BUILD)));
     return h(RN.ScrollView, null, ...content);
   }
 
@@ -1312,7 +1395,14 @@
     try { renderUnpatch = patchRender(); } catch (_) {}
     try {
       ActionSheet = findByProps("openLazy", "hideActionSheet");
-      if (ActionSheet) unpatches.push(patcher.before("openLazy", ActionSheet, hookSheet));
+      if (ActionSheet) {
+        unpatches.push(patcher.before("openLazy", ActionSheet, hookSheet));
+        unpatches.push(patcher.before("hideActionSheet", ActionSheet, () => {
+          pendingSheetPlan = null;
+          activeSheetPlan = null;
+          activeSheetInserted = false;
+        }));
+      }
     } catch (_) {}
     hookProfileOverflow();
     hookProfileMenuFactories();

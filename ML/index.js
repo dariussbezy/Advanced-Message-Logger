@@ -14,7 +14,7 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = 10;
+  const BUILD = 11;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -1396,24 +1396,27 @@
       const rows = [back(), h(RN.View, { key: "title", style: { paddingHorizontal: 16, paddingVertical: 8 } },
         Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, (isDel ? "Deleted messages" : "Edited messages") + " (" + entries.length + ")"))];
       if (!entries.length) rows.push(Text({ key: "empty", style: { color: C.sub, padding: 16 } }, "Nothing logged yet."));
-      for (const en of entries.slice(0, limit)) {
-        // Capture a stable message identity for each rendered row. Resolve the
-        // current record from its own log map when tapped, rather than keeping a
-        // loop object in callbacks that can outlive a reordered settings list.
-        const messageId = String(en.id);
-        const channelId = en.c == null ? null : String(en.c);
-        const guildId = en.g == null ? null : String(en.g);
-        const rowKey = "logged-" + kind + "-" + messageId;
-        rows.push(PressRow(rowKey, snippet(en.t), en.an + " · " + (channelId ? channelLabel(channelId, guildId) : "Unknown channel") + " · " + fmtTime(en.at), () => {
+      // Build each row in its own function scope, matching the ignored-list
+      // renderer. This keeps the row identity and native press callback paired
+      // even on the mobile React renderer when the list is reordered.
+      entries.slice(0, limit).forEach(function (entry) {
+        const rowKind = String(kind);
+        const messageId = String(entry.id);
+        const channelId = entry.c == null ? null : String(entry.c);
+        const guildId = entry.g == null ? null : String(entry.g);
+        const rowKey = "logged-" + rowKind + "-" + messageId;
+        const rowLabel = snippet(entry.t);
+        const rowSub = entry.an + " · " + (channelId ? channelLabel(channelId, guildId) : "Unknown channel") + " · " + fmtTime(entry.at);
+        rows.push(PressRow(rowKey, rowLabel, rowSub, function () {
           const record = isDel ? deleted.get(messageId) : edits.get(messageId);
           if (!record) return;
           const currentText = isDel
             ? record.t
             : record.cur || (record.v[record.v.length - 1] && record.v[record.v.length - 1].t) || "";
-          const authorName = record.an || en.an;
+          const authorName = record.an || entry.an;
           const timestamp = isDel
             ? record.at
-            : (record.v[record.v.length - 1] || { at: en.at }).at;
+            : (record.v[record.v.length - 1] || { at: entry.at }).at;
           const buttons = [];
           if (channelId) buttons.push({ text: "Jump to message", onPress: () => jumpTo(channelId, guildId, messageId, settingsNavigation) });
           if (!isDel) {
@@ -1422,7 +1425,7 @@
           buttons.push({ text: "Remove from log", style: "destructive", onPress: () => { removeLog({ id: messageId, channel_id: channelId }); refreshUI(); } });
           ask(authorName + " · " + fmtTime(timestamp), clip(currentText, 600), buttons);
         }));
-      }
+      });
       const m = more(entries.length);
       if (m) rows.push(m);
       return rows;

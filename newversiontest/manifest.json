@@ -1,13 +1,13 @@
 {
   "name": "Adv. Message Logger",
-  "description": "A message logger for deleted and edited messages in Kettu, with Loaded Only and Expanded Cache capture modes and configurable in-memory message limits.",
+  "description": "Advanced Message Logger v3.0.0 with configurable colors, search, saved filters, capture modes, and separate delete/edit notifications.",
   "authors": [
     {
       "name": "dariussbezy"
     }
   ],
   "main": "index.js",
-  "hash": "928ad5cc1df9a391528c69e15943305f30c38ddb04452313fe53dd7cb8239939",
+  "hash": "41e6ed9c92891a884f94b89d40ef40a34d6bd302a9d70d71a02663ffea905d9c",
   "vendetta": {
     "icon": "ic_message_edit"
   }

@@ -32,9 +32,9 @@ Please report bugs, crashes, and suggestions in the project's feedback channel.
 ## Screenshots
 
 <img width="1179" height="1428" alt="1" src="https://github.com/user-attachments/assets/633ac1ad-9b09-4d4f-aac7-4d8a2170d239" />
-<img width="1179" height="554" alt="2" src="https://github.com/user-attachments/assets/d4b320ac-f799-4516-81b3-323cb67b8883" />
-<img width="1000" height="2048" alt="3" src="https://github.com/user-attachments/assets/621d9fd7-0981-4a06-80b6-052ebe023377" />
-<img width="1179" height="787" alt="4" src="https://github.com/user-attachments/assets/9e2ed141-4748-442c-b46c-1c130e6e9d7c" />
-<img width="1179" height="2379" alt="5" src="https://github.com/user-attachments/assets/b3053c9d-af87-4f5f-a76e-388b6bf54f15" />
-<img width="1179" height="2379" alt="6" src="https://github.com/user-attachments/assets/98ea1ab7-5388-4616-a16e-f874fdb4d3a8" />
-<img width="1179" height="1325" alt="7" src="https://github.com/user-attachments/assets/c1852ca2-85a6-4115-ab72-00e9ef00349a" />
+<img width="1179" height="2406" alt="image" src="https://github.com/user-attachments/assets/d13afc3e-4fb9-49d2-9718-a6cdc8d3a1a2" />
+<img width="1179" height="2409" alt="image" src="https://github.com/user-attachments/assets/125bbaf2-daa4-4c9d-bd5d-0dbf604714ff" />
+<img width="1179" height="2409" alt="image" src="https://github.com/user-attachments/assets/30b642bd-f354-46c1-ad6a-f77462e45930" />
+<img width="1179" height="385" alt="image" src="https://github.com/user-attachments/assets/e9714f5e-e98c-46fb-af56-b85a2d0d7abf" />
+
+

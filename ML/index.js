@@ -445,37 +445,24 @@
     markDirty();
   }
 
-  const JUMP_METHODS = ["App link", "Jump action (experimental)", "System link"];
-
-  function jumpApp(channelId, guildId, messageId, link) {
-    const u = metro.common.url || findByProps("openURL", "openDeeplink");
-    if (u && typeof u.openURL === "function") { u.openURL(link); return true; }
-    return false;
-  }
-
-  function jumpAction(channelId, guildId, messageId) {
-    const actions = findByProps("jumpToMessage");
-    if (!actions || typeof actions.jumpToMessage !== "function") return false;
-    try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
-    if (messageId) actions.jumpToMessage({ channelId, messageId, flash: true, jumpType: "ANIMATED" });
-    return true;
-  }
-
-  function jumpSystem(channelId, guildId, messageId, link) {
-    const u = metro.common.url || findByProps("openDeeplink");
-    if (u && typeof u.openDeeplink === "function") { u.openDeeplink(link); return true; }
-    RN.Linking.openURL(link);
-    return true;
-  }
-
   function jumpTo(channelId, guildId, messageId) {
     const real = messageId && !String(messageId).startsWith("test-") ? messageId : null;
-    const link = "https://discord.com/channels/" + (guildId || "@me") + "/" + channelId + (real ? "/" + real : "");
-    const method = cfg().jumpMethod || 1;
-    const order = method === 2 ? [jumpAction, jumpApp, jumpSystem] : method === 3 ? [jumpSystem, jumpApp] : [jumpApp, jumpAction, jumpSystem];
-    for (const fn of order) {
-      try { if (fn(channelId, guildId, real, link)) return; } catch (_) {}
+    try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
+    if (!real) return;
+    const actions = findByProps("jumpToMessage");
+    if (!actions || typeof actions.jumpToMessage !== "function") {
+      toast("Could not find Kettu's message navigation action");
+      return;
     }
+    // Let the channel selection render before asking the message list to jump.
+    setTimeout(() => {
+      try {
+        actions.jumpToMessage({ channelId, messageId: real, flash: true, jumpType: "INSTANT" });
+      } catch (_) {
+        try { actions.jumpToMessage(channelId, real, true); }
+        catch (_) { toast("Kettu could not jump to that message"); }
+      }
+    }, 150);
   }
 
   function ask(title, message, buttons) {
@@ -496,28 +483,6 @@
     ask("Edit history", clip(parts.join("\n\n"), 3500), [{ text: "Close" }]);
   }
 
-  function askIgnore(message) {
-    const channelId = message.channel_id || message.channelId || currentChannelId();
-    const guildId = message.guild_id || guildOf(channelId);
-    const author = message.author;
-    const ig = ignored();
-    const buttons = [];
-    if (author && author.id) {
-      const n = nameOf(author);
-      buttons.push({ text: (ig.users[author.id] ? "Stop ignoring " : "Ignore ") + n, onPress: () => flipIgnore("users", author.id, n) });
-    }
-    if (channelId) {
-      const dm = isDM(getChannel(channelId));
-      const label = channelLabel(channelId, guildId);
-      buttons.push({ text: (ig.channels[channelId] ? "Stop ignoring " : "Ignore ") + (dm ? "this DM" : "this channel"), onPress: () => flipIgnore("channels", channelId, label) });
-    }
-    if (guildId) {
-      const gn = guildName(guildId) || guildId;
-      buttons.push({ text: (ig.guilds[guildId] ? "Stop ignoring " : "Ignore ") + "this server", onPress: () => flipIgnore("guilds", guildId, gn) });
-    }
-    if (buttons.length) ask("Advanced Message Logger", "Choose what the logger should ignore.", buttons);
-  }
-
   function messagePlan(message) {
     if (!message || !message.id) return null;
     const plan = [];
@@ -525,7 +490,6 @@
     if (en && en.v.length) plan.push({ key: "bml-view-edits", label: "View edit history", icon: "history", press: () => showEdits(message) });
     if (deleted.has(message.id)) plan.push({ key: "bml-remove-log", label: "Remove logged message", icon: "trash", press: () => removeLog(message) });
     else if (en) plan.push({ key: "bml-remove-log", label: "Remove edit history", icon: "trash", press: () => removeLog(message) });
-    if (cfg().msgMenuIgnore) plan.push({ key: "bml-ignore", label: "Ignore in logger...", icon: "eye", press: () => askIgnore(message) });
     return plan.length ? plan : null;
   }
 
@@ -576,13 +540,14 @@
       press: () => flipIgnore(kind, id, name),
     });
     try {
-      const user = ctx.user || (ctx.userId && UserStore.getUser(ctx.userId));
-      const channel = ctx.channel || getChannel(ctx.channelId);
+      const user = ctx.user || ctx.recipient || (ctx.member && ctx.member.user) || (ctx.userId && UserStore.getUser(ctx.userId));
+      const channel = ctx.channel || getChannel(ctx.channelId || ctx.channel_id);
       const guild = ctx.guild || (ctx.guildId && GuildStore.getGuild(ctx.guildId));
       if (/user|profile|member/i.test(key) && user && user.id) return [item("users", user.id, nameOf(user), "user")];
       if (channel && channel.id) {
-        const plan = [item("channels", channel.id, channelLabel(channel.id, channel.guild_id), isDM(channel) ? "DM" : "channel")];
-        if (channel.type === 1) {
+        const dm = isDM(channel);
+        const plan = [item("channels", channel.id, channelLabel(channel.id, channel.guild_id), dm ? "DM" : "channel")];
+        if (/ChannelLongPress/i.test(key) && dm && channel.type === 1) {
           const rid = channel.recipients && channel.recipients[0];
           const other = rid && UserStore.getUser(rid);
           if (other && other.id) plan.push(item("users", other.id, nameOf(other), "user"));
@@ -682,6 +647,94 @@
           try { addButtons(tree, plan); } catch (_) {}
         });
       });
+    } catch (_) {}
+  }
+
+  function addProfileIgnore(tree, user) {
+    if (!tree || !user || !user.id) return false;
+    const marker = "bml-profile-ignore-" + user.id;
+    const label = (ignored().users[user.id] ? "Stop ignoring " : "Ignore ") + nameOf(user) + " in logger";
+    let added = false;
+    const seen = new Set();
+    const visit = (node, depth) => {
+      if (!node || typeof node !== "object" || depth > 40 || seen.has(node) || added) return;
+      seen.add(node);
+      if (Array.isArray(node)) {
+        if (node.some((e) => e && (e.key === marker || (e.props && e.props.key === marker)))) { added = true; return; }
+        const template = node.find((e) => e && e.props && typeof e.props.label === "string" &&
+          (e.props.onPress || e.props.onSelect || e.props.action || e.props.onClick));
+        if (template) {
+          const handler = () => flipIgnore("users", user.id, nameOf(user));
+          const props = { key: marker, label };
+          const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof template.props[k] === "function") || "onPress";
+          props[callback] = handler;
+          for (const k of ["onPress", "onSelect", "action", "onClick", "callback"]) {
+            if (typeof template.props[k] === "function") props[k] = handler;
+          }
+          if (template.props.index !== undefined) props.index = node.length;
+          if (template.props.lastInSection !== undefined) props.lastInSection = true;
+          node.push(React.cloneElement(template, props));
+          added = true;
+          return;
+        }
+        const dataTemplate = node.find((e) => e && typeof e.label === "string" &&
+          ["onPress", "onSelect", "action", "onClick", "callback"].some((k) => typeof e[k] === "function"));
+        if (dataTemplate) {
+          const handler = () => flipIgnore("users", user.id, nameOf(user));
+          const copy = { ...dataTemplate, key: marker, id: marker, label };
+          const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof dataTemplate[k] === "function");
+          copy[callback] = handler;
+          node.push(copy);
+          added = true;
+          return;
+        }
+        for (const child of node) visit(child, depth + 1);
+        return;
+      }
+      if (node.props) {
+        const type = node.type && (node.type.displayName || node.type.name || (node.type.type && node.type.type.name));
+        const props = node.props;
+        if (/ContextMenu/i.test(String(type || "")) && Array.isArray(props.items)) {
+          const items = props.items;
+          if (!items.some((e) => e && (e.key === marker || e.id === marker || (e.props && e.props.key === marker)))) {
+            const sample = items.find((e) => e && (e.props || e.label));
+            if (sample && sample.props) {
+              const handler = () => flipIgnore("users", user.id, nameOf(user));
+              const itemProps = { key: marker, label };
+              const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof sample.props[k] === "function") || "onPress";
+              itemProps[callback] = handler;
+              for (const k of ["onPress", "onSelect", "action", "onClick", "callback"]) {
+                if (typeof sample.props[k] === "function") itemProps[k] = handler;
+              }
+              items.push(React.cloneElement(sample, itemProps));
+            } else {
+              items.push({ key: marker, id: marker, label, onPress: () => flipIgnore("users", user.id, nameOf(user)) });
+            }
+          }
+          added = true;
+          return;
+        }
+        visit(props.items, depth + 1);
+        visit(props.children, depth + 1);
+      }
+    };
+    try { visit(tree, 0); } catch (_) {}
+    return added;
+  }
+
+  function hookProfileOverflow() {
+    try {
+      const module = findByName("UserProfileOverflowMenu", false);
+      if (!module || !module.default) return;
+      unpatches.push(patcher.after("default", module, (args, tree) => {
+        const props = args && args[0] || {};
+        const user = props.user || props.profileUser || (props.userId && UserStore.getUser(props.userId));
+        const added = addProfileIgnore(tree, user);
+        if (cfg().devMenus) {
+          seenMenus.set("UserProfileOverflowMenu", Object.keys(props).slice(0, 8).join(",") + (added ? " [button added]" : " [no button]"));
+          trimMap(seenMenus, 30);
+        }
+      }));
     } catch (_) {}
   }
 
@@ -952,7 +1005,7 @@
       const total = groups.reduce((n, g) => n + Object.keys(ig[g[0]]).length, 0);
       const rows = [back(), h(RN.View, { key: "title", style: { paddingHorizontal: 16, paddingVertical: 8 } },
         Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, "Ignored (" + total + ")"))];
-      if (!total) rows.push(Text({ key: "empty", style: { color: C.sub, padding: 16 } }, "Nothing is ignored. Long-press a server, channel, DM or message and choose the ignore option."));
+        if (!total) rows.push(Text({ key: "empty", style: { color: C.sub, padding: 16 } }, "Nothing is ignored. Long-press a DM, open a profile's three-dot menu, or long-press a server or channel."));
       for (const [kind, title] of groups) {
         const ids = Object.keys(ig[kind]);
         if (!ids.length) continue;
@@ -989,7 +1042,6 @@
         Section("Logs"),
         PressRow("nav-deleted", "Deleted messages", deleted.size + " logged", () => go("deleted"), ">"),
         PressRow("nav-edited", "Edited messages", edits.size + " logged", () => go("edited"), ">"),
-        PressRow("jump", "Jump to message method", "Tap to switch if jumping opens the wrong app", () => { cfg().jumpMethod = (cfg().jumpMethod || 1) % 3 + 1; refreshUI(); }, JUMP_METHODS[(cfg().jumpMethod || 1) - 1]),
         PressRow("nav-ignored", "Ignored servers, channels and users", ignoredCount + " ignored", () => go("ignored"), ">"),
         Btn("clear", "Clear all logged messages", () => {
           ask("Clear all logged messages?", "This removes every stored deleted and edited message, including the ones saved on this device.", [
@@ -997,7 +1049,6 @@
           ]);
         }, RED),
         Section("Advanced"),
-        Switch("msgMenuIgnore", "Ignore option in message menu", "Adds an ignore button to the message long-press menu"),
         Switch("devMenus", "Detect menus", "Lists the menus you open, useful for bug reports. Turn off when done", (v) => {
           cfg().devMenus = v;
           if (v) startCompScan(); else stopCompScan();
@@ -1026,7 +1077,7 @@
     const s = cfg();
     const defaults = {
       logDeleted: true, logEdited: true, persist: false, redName: true, skipOwn: false, skipBots: false,
-      showDeletedTime: false, showEditTime: false, retentionDays: 0, devMenus: false, jumpMethod: 1, msgMenuIgnore: false,
+      showDeletedTime: false, showEditTime: false, retentionDays: 0, devMenus: false,
     };
     for (const k of Object.keys(defaults)) if (s[k] === undefined) s[k] = defaults[k];
     if (!s.ignored) s.ignored = { channels: {}, guilds: {}, users: {} };
@@ -1044,6 +1095,7 @@
       ActionSheet = findByProps("openLazy", "hideActionSheet");
       if (ActionSheet) unpatches.push(patcher.before("openLazy", ActionSheet, hookSheet));
     } catch (_) {}
+    hookProfileOverflow();
     if (s.devMenus) startCompScan();
     try {
       appStateSub = RN.AppState.addEventListener("change", (state) => {

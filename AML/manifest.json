@@ -1,0 +1,14 @@
+{
+  "name": "Advanced Message Logger",
+  "description": "Log deleted and edited messages in Kettu, jump back to them, and filter logs by server, channel, DM, or user.",
+  "authors": [
+    {
+      "name": "dariussbezy"
+    }
+  ],
+  "main": "index.js",
+  "hash": "99f941e0b9f81b0cc3a92c271cbc729088e3f9c4ac86b74aa19a7e57a0a28ee1",
+  "vendetta": {
+    "icon": "ic_message_edit"
+  }
+}

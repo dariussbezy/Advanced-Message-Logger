@@ -1,8 +1,0 @@
-{
-  "name": "Basic Message Logger",
-  "description": "A simple message logger inspired by the Vencord version. Open the plugin settings to choose what to keep.",
-  "authors": [{ "name": "dariussbezy" }],
-  "main": "index.js",
-  "hash": "fc7e568f4cc7597c89ce019ac28953f62c92872edfe5da6fb9de27d02596f489",
-  "vendetta": { "icon": "ic_message_edit" }
-}

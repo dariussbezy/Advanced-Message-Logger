@@ -14,7 +14,7 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = 6;
+  const BUILD = 7;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -533,26 +533,19 @@
             setTimeout(() => {
               // Use the client's channel router so navigation leaves the
               // profile tab and enters the actual Kettu conversation route.
-              let routed = false;
               try {
                 const channelRouter = findByProps("transitionToChannel");
                 if (channelRouter && typeof channelRouter.transitionToChannel === "function") {
                   channelRouter.transitionToChannel(String(channelId));
-                  routed = true;
                 }
               } catch (_) {}
-              if (!routed) {
-                try {
-                  const navigationRouter = findByProps("transitionTo");
-                  const path = guildId
-                    ? "/channels/" + String(guildId) + "/" + String(channelId)
-                    : "/channels/@me/" + String(channelId);
-                  if (navigationRouter && typeof navigationRouter.transitionTo === "function") {
-                    navigationRouter.transitionTo(path);
-                    routed = true;
-                  }
-                } catch (_) {}
-              }
+              try {
+                const navigationRouter = findByProps("transitionTo");
+                const path = guildId
+                  ? "/channels/" + String(guildId) + "/" + String(channelId)
+                  : "/channels/@me/" + String(channelId);
+                if (navigationRouter && typeof navigationRouter.transitionTo === "function") navigationRouter.transitionTo(path);
+              } catch (_) {}
               try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
               if (!real) return;
               const actions = findByProps("jumpToMessage");
@@ -1244,8 +1237,6 @@
     vstorage.useProxy(plugin.storage);
     const [screen, setScreen] = React.useState("main");
     const [limit, setLimit] = React.useState(PAGE);
-    const [pendingIgnoreRemoval, setPendingIgnoreRemoval] = React.useState(null);
-    const [ignoreRemovalStep, setIgnoreRemovalStep] = React.useState(1);
     const [, bump] = React.useState(0);
     let settingsNavigation = null;
     try {
@@ -1261,10 +1252,17 @@
     const go = (name) => { setLimit(PAGE); setScreen(name); };
 
     const confirmStopIgnoring = (kind, id, entryName) => {
-      setPendingIgnoreRemoval({ kind, id: String(id), name: String(entryName || id) });
-      setIgnoreRemovalStep(1);
-      setScreen("ignoredConfirm");
-      refreshUI();
+      // Capture the identity from this exact row. The native alert keeps the
+      // list stationary until the user confirms, then returns to the list.
+      const exactKind = String(kind);
+      const exactId = String(id);
+      const exactName = String(entryName || id);
+      const category = exactKind === "guilds" ? "server" : exactKind === "channels" ? "channel or DM" : "user";
+      ask("Stop ignoring?", "Remove “" + exactName + "” from the ignored " + category + " list?", [
+        { text: "Stop ignoring", style: "destructive", onPress: () => {
+          if (setIgnore(exactKind, exactId, exactName, false)) refreshUI();
+        } },
+      ]);
     };
 
     const Text = (props, ...kids) => h(RN.Text, props, ...kids);
@@ -1353,59 +1351,9 @@
       return rows;
     };
 
-    const ignoredConfirmScreen = () => {
-      const target = pendingIgnoreRemoval;
-      if (!target) return [back()];
-      const category = target.kind === "guilds" ? "server" : target.kind === "channels" ? "channel or DM" : "user";
-      const rows = [Btn("cancel-remove", "< Back to ignored", () => {
-        setPendingIgnoreRemoval(null);
-        setScreen("ignored");
-        refreshUI();
-      })];
-      rows.push(h(RN.View, { key: "remove-title", style: { paddingHorizontal: 16, paddingVertical: 14 } },
-        Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, "Confirm removal · " + ignoreRemovalStep + " of 2"),
-        Text({ style: { color: C.sub, fontSize: 14, marginTop: 8 } },
-          ignoreRemovalStep === 1
-            ? "Stop ignoring this " + category + "? The item will stay in the list until you confirm twice."
-            : "Final confirmation: remove “" + target.name + "” from the ignored " + category + " list?")));
-      if (ignoreRemovalStep === 1) {
-        rows.push(Btn("remove-continue", "Continue", () => { setIgnoreRemovalStep(2); refreshUI(); }));
-      } else {
-        rows.push(Btn("remove-final", "Remove ignore", () => {
-          if (setIgnore(target.kind, target.id, target.name, false)) {
-            // Stay on a non-list screen after the destructive button. If the
-            // list were rendered under the same release gesture, the row that
-            // shifted into its place could receive that gesture too.
-            setScreen("ignoredRemoved");
-            refreshUI();
-          }
-        }, RED));
-      }
-      return rows;
-    };
-
-    const ignoredRemovedScreen = () => {
-      const target = pendingIgnoreRemoval;
-      if (!target) return [Btn("removed-back-fallback", "< Back to ignored", () => setScreen("ignored"))];
-      return [
-        Btn("removed-back", "< Back to ignored", () => {
-          setPendingIgnoreRemoval(null);
-          setIgnoreRemovalStep(1);
-          setScreen("ignored");
-          refreshUI();
-        }),
-        h(RN.View, { key: "removed-message", style: { paddingHorizontal: 16, paddingVertical: 16 } },
-          Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, "Ignore removed"),
-          Text({ style: { color: C.sub, fontSize: 14, marginTop: 8 } },
-            "“" + target.name + "” is no longer ignored. Return to the list when you're ready.")),
-      ];
-    };
-
     let content;
     if (screen === "deleted" || screen === "edited") content = loggedScreen(screen);
     else if (screen === "ignored") content = ignoredScreen();
-    else if (screen === "ignoredConfirm") content = ignoredConfirmScreen();
-    else if (screen === "ignoredRemoved") content = ignoredRemovedScreen();
     else {
       const ig = ignored();
       const ignoredCount = Object.keys(ig.guilds).length + Object.keys(ig.channels).length + Object.keys(ig.users).length;

@@ -1,11 +1,14 @@
 {
-  "name": "Ghost Ping Logger",
-  "description": "Detect deleted mentions, replies, and DM messages with a persistent in-app alert, jump action, and local history.",
+  "name": "Adv. Message Logger",
+  "description": "A message logger for deleted and edited messages in Kettu, with Loaded Only and Expanded Cache capture modes and configurable in-memory message limits.",
   "authors": [
     {
       "name": "dariussbezy"
     }
   ],
   "main": "index.js",
-  "hash": "68eecb051bfe0db716ced7718d191d9c701621c7e86c77f4f1ac0200e416863b"
+  "hash": "928ad5cc1df9a391528c69e15943305f30c38ddb04452313fe53dd7cb8239939",
+  "vendetta": {
+    "icon": "ic_message_edit"
+  }
 }

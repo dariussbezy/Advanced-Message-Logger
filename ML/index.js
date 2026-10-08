@@ -14,7 +14,7 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = 1;
+  const BUILD = 2;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -34,6 +34,7 @@
   const seenMenus = new Map();
   const unpatches = [];
   let ActionSheet;
+  let ActionSheetRowIconComponent;
   let MessageStore;
   let UserStore;
   let ChannelStore;
@@ -460,11 +461,35 @@
 
   function jumpTo(channelId, guildId, messageId, navigation) {
     const real = messageId && !String(messageId).startsWith("test-") ? messageId : null;
+    const openMessagesTab = () => {
+      let current = navigation;
+      for (let depth = 0; current && depth < 8; depth++) {
+        let state = null;
+        try { state = typeof current.getState === "function" ? current.getState() : null; } catch (_) {}
+        const routes = state && Array.isArray(state.routes) ? state.routes : [];
+        const target = routes.find((route) => /^(home|messages|messagestab|hometab|directmessages)$/i.test(String(route.name || ""))) ||
+          routes.find((route) => /home|messages|direct.?messages/i.test(String(route.name || "")) && !/setting|profile|you/i.test(String(route.name || "")));
+        if (target) {
+          try {
+            if (typeof current.jumpTo === "function") current.jumpTo(target.name);
+            else if (typeof current.navigate === "function") current.navigate(target.name);
+            else return false;
+            return true;
+          } catch (_) {}
+        }
+        try { current = typeof current.getParent === "function" ? current.getParent() : null; }
+        catch (_) { current = null; }
+      }
+      return false;
+    };
     const selectAfterClose = () => {
       setTimeout(() => {
         try { FluxDispatcher.dispatch({ type: "USER_PROFILE_MODAL_CLOSE" }); } catch (_) {}
         try { FluxDispatcher.dispatch({ type: "USER_SETTINGS_MODAL_CLOSE" }); } catch (_) {}
-        try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
+        openMessagesTab();
+        setTimeout(() => {
+          try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
+        }, 180);
         if (!real) return;
         const actions = findByProps("jumpToMessage");
         if (!actions || typeof actions.jumpToMessage !== "function") {
@@ -478,7 +503,7 @@
             try { actions.jumpToMessage(channelId, real, true); }
             catch (_) { toast("Kettu could not jump to that message"); }
           }
-        }, 150);
+        }, 350);
       }, 250);
     };
     // The plugin is opened from the profile screen. Unwind the plugin's own
@@ -562,7 +587,7 @@
     return {
       key: "bml-ignore-" + kind,
       label: (on ? "Stop ignoring this " : "Ignore this ") + word + " in logger",
-      icon: "eye",
+      icon: kind === "users" ? "user" : kind === "guilds" ? "server" : "dm",
       press: () => flipIgnore(kind, id, name),
     };
   }
@@ -584,11 +609,6 @@
       if (channel && channel.id) {
         const dm = isDM(channel);
         const plan = [item("channels", channel.id, channelLabel(channel.id, channel.guild_id), dm ? "DM" : "channel")];
-        if (/ChannelLongPress/i.test(key) && dm && channel.type === 1) {
-          const rid = channel.recipients && (channel.recipients.find((id) => id !== myId()) || channel.recipients[0]);
-          const other = rid && UserStore.getUser(rid);
-          if (other && other.id) plan.push(item("users", other.id, nameOf(other), "user"));
-        }
         return plan;
       }
       if (guild && guild.id) return [item("guilds", guild.id, guild.name || guild.id, "server")];
@@ -675,7 +695,6 @@
     if (alreadyAdded) return tree;
 
     const makeRows = (template) => plan.map((item) => {
-      const original = template.props;
       const press = () => {
         try {
           try { ActionSheet && ActionSheet.hideActionSheet && ActionSheet.hideActionSheet(); } catch (_) {}
@@ -684,11 +703,10 @@
       };
       const props = { key: item.key, label: item.label, onPress: press };
       if (/^ActionSheetRow$/.test(componentName(template.type))) {
-        props.icon = null;
-        props.trailing = null;
+        return React.cloneElement(template, props, rowGlyph(item));
       } else {
         props.iconSource = null;
-        props.IconComponent = undefined;
+        props.IconComponent = item.icon === "user" ? LoggerPersonGlyph : LoggerDmGlyph;
       }
       return React.cloneElement(template, props);
     });
@@ -757,6 +775,37 @@
       return React.cloneElement(cur, { source: id });
     }
     return undefined;
+  }
+
+  function LoggerPersonGlyph(props) {
+    const color = props && props.color || "#B5BAC1";
+    return React.createElement(RN.View, {
+      style: [props && props.style, { width: 20, height: 20, alignItems: "center", justifyContent: "center" }],
+    },
+    React.createElement(RN.View, { style: { width: 7, height: 7, borderRadius: 4, backgroundColor: color, marginBottom: 2 } }),
+    React.createElement(RN.View, { style: { width: 14, height: 8, borderTopLeftRadius: 7, borderTopRightRadius: 7, backgroundColor: color } }));
+  }
+
+  function LoggerDmGlyph(props) {
+    const color = props && props.color || "#B5BAC1";
+    return React.createElement(RN.View, {
+      style: [props && props.style, { width: 20, height: 20, alignItems: "center", justifyContent: "center" }],
+    },
+    React.createElement(RN.View, { style: { width: 16, height: 12, borderRadius: 4, backgroundColor: color } }),
+    React.createElement(RN.View, { style: { position: "absolute", left: 4, bottom: 2, width: 0, height: 0, borderTopWidth: 5, borderTopColor: color, borderRightWidth: 5, borderRightColor: "transparent" } }));
+  }
+
+  function rowGlyph(item) {
+    const IconComponent = item.icon === "user" ? LoggerPersonGlyph : LoggerDmGlyph;
+    if (ActionSheetRowIconComponent === undefined) {
+      try {
+        const mod = findByName("ActionSheetRowIcon", false);
+        ActionSheetRowIconComponent = mod && (mod.default || mod) || null;
+      } catch (_) { ActionSheetRowIconComponent = null; }
+    }
+    return ActionSheetRowIconComponent
+      ? React.createElement(ActionSheetRowIconComponent, { IconComponent })
+      : React.createElement(IconComponent, null);
   }
 
   function hookSheet(args) {
@@ -855,6 +904,8 @@
               const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof sample.props[k] === "function");
               if (callback) {
                 itemProps[callback] = handler;
+                itemProps.iconSource = null;
+                itemProps.IconComponent = LoggerPersonGlyph;
                 if (sample.props.index !== undefined) itemProps.index = items.length;
                 if (sample.props.lastInSection !== undefined) itemProps.lastInSection = true;
                 addedItem = React.cloneElement(sample, itemProps);
@@ -865,6 +916,8 @@
               const callbacks = callbackKeys.filter((k) => typeof sample[k] === "function");
               if (callbacks.length) {
                 for (const k of callbacks) itemCopy[k] = handler;
+                itemCopy.iconSource = null;
+                itemCopy.IconComponent = LoggerPersonGlyph;
                 if (sample.index !== undefined) itemCopy.index = items.length;
                 if (sample.lastInSection !== undefined) itemCopy.lastInSection = true;
                 addedItem = itemCopy;
@@ -893,7 +946,7 @@
               index: rows.length,
               lastInSection: true,
               iconSource: null,
-              IconComponent: undefined,
+              IconComponent: LoggerPersonGlyph,
             };
             const ignoreIndex = rows.findIndex((row) => isMenuRow(row) && /^ignore$/i.test(row.props.label));
             const blockIndex = rows.findIndex((row) => isMenuRow(row) && /^block$/i.test(row.props.label));

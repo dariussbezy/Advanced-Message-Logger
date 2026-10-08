@@ -1,6 +1,6 @@
 {
   "name": "Adv. Message Logger",
-  "description": "Advanced Message Logger v3.0.0 with configurable colors, search, saved filters, capture modes, and 12-hour time display.",
+  "description": "A very stable and advanced message logger that logs deleted and edited messages in Kettu, jump back to them, and much more! Check the plugin settings.",
   "authors": [
     {
       "name": "dariussbezy"

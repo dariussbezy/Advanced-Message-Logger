@@ -14,7 +14,7 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = 8;
+  const BUILD = 9;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -129,10 +129,92 @@
     return { channels: (ig && ig.channels) || {}, guilds: (ig && ig.guilds) || {}, users: (ig && ig.users) || {} };
   }
 
+  function directDMForUser(userId) {
+    try {
+      loadStores();
+      const id = String(userId);
+      const resolve = (value) => {
+        if (!value) return null;
+        const channel = typeof value === "string" || typeof value === "number" ? getChannel(String(value)) : value;
+        if (!channel || String(channel.type) !== "1" || !channel.id) return null;
+        const recipients = Array.isArray(channel.recipients) ? channel.recipients : [];
+        if (recipients.length && !recipients.some((r) => String(r && typeof r === "object" ? r.id : r) === id)) return null;
+        return channel;
+      };
+
+      // ChannelStore's DM lookup is the authoritative mapping; validate its result
+      // so group DMs and unrelated private channels are never added.
+      if (ChannelStore && typeof ChannelStore.getDMFromUserId === "function") {
+        const channel = resolve(ChannelStore.getDMFromUserId(id));
+        if (channel) return channel;
+      }
+
+      // On builds that lack the lookup method, use the currently selected channel
+      // only when it is a one-to-one DM with this exact recipient.
+      const selected = getChannel(currentChannelId());
+      if (selected && String(selected.type) === "1") {
+        const recipients = Array.isArray(selected.recipients) ? selected.recipients : [];
+        if (recipients.some((r) => String(r && typeof r === "object" ? r.id : r) === id)) return selected;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function setUserIgnoreWithDM(userId, name, shouldIgnore) {
+    try {
+      const id = String(userId);
+      const storage = cfg();
+      const current = storage.ignored && typeof storage.ignored === "object" ? storage.ignored : {};
+      const ig = JSON.parse(JSON.stringify({
+        channels: current.channels || {},
+        guilds: current.guilds || {},
+        users: current.users || {},
+      }));
+      const links = JSON.parse(JSON.stringify(storage.autoIgnoredDMsByUser || {}));
+      let dmAdded = false;
+
+      if (shouldIgnore) {
+        ig.users[id] = name || id;
+        const dm = directDMForUser(id);
+        if (dm && dm.id) {
+          const dmId = String(dm.id);
+          if (!ig.channels[dmId]) {
+            ig.channels[dmId] = "DM · " + (name || dmName(dm));
+            links[id] = dmId;
+            dmAdded = true;
+          }
+        }
+      } else {
+        delete ig.users[id];
+        const linkedDMId = links[id];
+        // Remove only entries this user-ignore action created. An independently
+        // ignored DM remains ignored when the user is unignored.
+        if (linkedDMId && Object.keys(links).every((otherId) => otherId === id || String(links[otherId]) !== String(linkedDMId))) {
+          delete ig.channels[String(linkedDMId)];
+        }
+        delete links[id];
+      }
+
+      storage.ignored = ig;
+      storage.autoIgnoredDMsByUser = links;
+      if (!!(storage.ignored && storage.ignored.users && storage.ignored.users[id]) !== !!shouldIgnore) {
+        throw new Error("User ignore update did not persist");
+      }
+      toast(shouldIgnore
+        ? "Logger now ignores " + (name || id) + (dmAdded ? " and their DM" : "")
+        : "Logger no longer ignores " + (name || id));
+      return true;
+    } catch (_) {
+      toast("Could not update the logger ignore list");
+      return false;
+    }
+  }
+
   function setIgnore(kind, id, name, shouldIgnore) {
     try {
       if (!["channels", "guilds", "users"].includes(kind) || id == null) return false;
       id = String(id);
+      if (kind === "users") return setUserIgnoreWithDM(id, name, shouldIgnore);
       const storage = cfg();
       const current = storage.ignored && typeof storage.ignored === "object" ? storage.ignored : {};
       const ig = JSON.parse(JSON.stringify({

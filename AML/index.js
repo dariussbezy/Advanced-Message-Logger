@@ -12,9 +12,11 @@
   const MAX_LOGGED = 2000;
   const MAX_EDITED = 1000;
   const MAX_SAVED_RAW = 1000;
-  const MAX_RAW_BUFFER = 500;
+  const DEFAULT_RAW_BUFFER = 1000;
+  const MIN_RAW_BUFFER = 100;
+  const MAX_RAW_BUFFER = 5000;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = "v2.0.0";
+  const BUILD = "v3.0.0";
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -54,16 +56,25 @@
   const profileWrappedTypes = new WeakSet();
 
   const cfg = () => plugin.storage;
+  const GPL_BRIDGE_KEY = "__advanced_message_logger_gpl_bridge_v1__";
+  let gplBridge = null;
   const toast = (t) => { try { ui.toasts.showToast(t); } catch (_) {} };
   const trimMap = (m, max) => { while (m.size > max) m.delete(m.keys().next().value); };
   const cmp = (a, b) => (a.length - b.length) || (a < b ? -1 : a > b ? 1 : 0);
   const snowTime = (id) => Math.floor(Number(id) / 4194304) + DISCORD_EPOCH;
   const clip = (s, n) => String(s == null ? "" : s).slice(0, n);
+  function colorValue(key, fallback) {
+    const value = String(cfg()[key] || "");
+    return /^#[0-9a-fA-F]{6}$/.test(value) ? value.toUpperCase() : fallback;
+  }
+  const withAlpha = (color, alpha) => color + alpha;
 
   function fmtTime(ms) {
     const d = new Date(ms);
     const p = (n) => (n < 10 ? "0" : "") + n;
-    const t = p(d.getHours()) + ":" + p(d.getMinutes());
+    const use12HourClock = !!cfg().use12HourClock;
+    const hour = use12HourClock ? ((d.getHours() % 12) || 12) : d.getHours();
+    const t = p(hour) + ":" + p(d.getMinutes()) + (use12HourClock ? (d.getHours() < 12 ? " AM" : " PM") : "");
     if (d.toDateString() === new Date().toDateString()) return t;
     return p(d.getDate()) + "/" + p(d.getMonth() + 1) + " " + t;
   }
@@ -83,6 +94,13 @@
 
   function getMessage(channelId, id) {
     try { return MessageStore.getMessage(channelId, id) || null; } catch (_) { return null; }
+  }
+  function getKnownMessage(channelId, id) {
+    const inStore = getMessage(channelId, id);
+    if (inStore) return inStore;
+    if (cfg().captureMode !== "expanded") return null;
+    const cached = rawBuffer.get(id);
+    return cached && (!cached.channel_id || String(cached.channel_id) === String(channelId)) ? cached : null;
   }
   function getChannel(id) {
     try { return id ? ChannelStore.getChannel(id) : null; } catch (_) { return null; }
@@ -334,8 +352,6 @@
     if (on) {
       loadSaved();
       markDirty();
-    } else {
-      rawBuffer.clear();
     }
   }
 
@@ -348,10 +364,16 @@
   }
 
   function remember(raw) {
-    if (!raw || !raw.id) return;
+    if (cfg().captureMode !== "expanded" || !raw || !raw.id) return;
     rawBuffer.delete(raw.id);
     rawBuffer.set(raw.id, raw);
-    trimMap(rawBuffer, MAX_RAW_BUFFER);
+    trimMap(rawBuffer, rawBufferLimit());
+  }
+
+  function rawBufferLimit() {
+    const value = Number(cfg().maxCachedMessages);
+    if (!Number.isFinite(value)) return DEFAULT_RAW_BUFFER;
+    return Math.max(MIN_RAW_BUFFER, Math.min(MAX_RAW_BUFFER, Math.round(value)));
   }
 
   function refresh(msg, channelId, id, guildId) {
@@ -378,6 +400,15 @@
     }, 0);
   }
 
+  function refreshStyledMessages() {
+    const ids = new Set([...deleted.keys(), ...edits.keys()]);
+    for (const id of ids) {
+      const info = deleted.get(id) || edits.get(id);
+      const msg = getMessage(info && info.c, id);
+      if (msg) refreshToggle(msg, info.c, id, info.g || guildOf(info.c));
+    }
+  }
+
   function markDeleted(msg, channelId, id, guildId) {
     const info = {
       c: channelId, g: guildId || null, ai: msg.author && msg.author.id, an: nameOf(msg.author),
@@ -397,7 +428,10 @@
       }
       markDirty();
     }
-    refresh(msg, channelId, id, guildId);
+    refreshToggle(msg, channelId, id, guildId);
+    if (cfg().notifyDeleted && isDM(getChannel(channelId))) {
+      toast("Deleted message from " + info.an + ": " + clip(info.t, 80));
+    }
   }
 
   const blocked = (original) => ({ type: "MESSAGE_LOGGER_BLOCKED", original });
@@ -409,7 +443,7 @@
 
   function onDelete(e) {
     if (!e.id || isAllowed(e.id)) return null;
-    const msg = getMessage(e.channelId, e.id);
+    const msg = getKnownMessage(e.channelId, e.id);
     if (!msg) return null;
     const guildId = e.guildId || guildOf(e.channelId);
     if (shouldSkip(msg, e.channelId, guildId)) return null;
@@ -425,7 +459,7 @@
     const pass = [];
     const keptIds = [];
     for (const id of e.ids) {
-      const msg = getMessage(e.channelId, id);
+      const msg = getKnownMessage(e.channelId, id);
       if (!msg || shouldSkip(msg, e.channelId, guildId)) { pass.push(id); continue; }
       if (!cfg().logDeleted) { pass.push(id); continue; }
       markDeleted(msg, e.channelId, id, guildId);
@@ -438,7 +472,7 @@
   function onEdit(e) {
     const m = e.message;
     if (!cfg().logEdited || !m || typeof m.content !== "string" || !m.edited_timestamp) return;
-    const old = getMessage(m.channel_id, m.id);
+    const old = getKnownMessage(m.channel_id, m.id);
     if (!old || typeof old.content !== "string" || !old.content || old.content === m.content) return;
     const guildId = m.guild_id || guildOf(m.channel_id);
     if (shouldSkip(old, m.channel_id, guildId)) return;
@@ -456,6 +490,9 @@
     en.v.push({ t: text, at: Date.parse(m.edited_timestamp) || Date.now() });
     if (en.v.length > MAX_VERSIONS) { en.v.shift(); en.trimmed = true; }
     markDirty();
+    if (cfg().notifyEdited && isDM(getChannel(m.channel_id))) {
+      toast("Edited message from " + en.an + ": " + clip(en.cur, 80));
+    }
   }
 
   function inject(e) {
@@ -504,20 +541,23 @@
         }
         case "MESSAGE_UPDATE": {
           onEdit(e);
-          if (cfg().persist && e.message && e.message.id) {
+          if (e.message && e.message.id) {
             const old = rawBuffer.get(e.message.id);
             if (old) rawBuffer.set(e.message.id, { ...old, ...e.message });
           }
           break;
         }
         case "MESSAGE_CREATE": {
-          if (cfg().persist) remember(e.message);
+          // Keep a bounded in-memory snapshot of messages Kettu receives even
+          // when their channel is not currently open in MessageStore.
+          remember(e.message);
           break;
         }
         case "LOAD_MESSAGES_SUCCESS": {
-          if (!cfg().persist) break;
-          const r = inject(e);
-          if (r) args[0] = r;
+          if (cfg().persist) {
+            const r = inject(e);
+            if (r) args[0] = r;
+          }
           const list = args[0].messages;
           if (Array.isArray(list)) for (const m of list) remember(m);
           break;
@@ -1246,40 +1286,55 @@
     const versions = en && en.v && en.v.length ? en.v : null;
     if (!info && !versions) {
       if (m.__glOut && m.content === m.__glOut) m.content = m.__glBase;
+      if (m.__glNameBase) {
+        m.colorString = m.__glNameBase.colorString;
+        m.usernameColor = m.__glNameBase.usernameColor;
+        delete m.__glNameBase;
+      }
       return;
     }
 
     const pc = RN && RN.processColor;
-    const red = pc ? pc(RED) : null;
-    const grey = pc ? pc(GREY) : null;
+    const deletedColor = colorValue("deletedMessageColor", RED);
+    const editedColor = colorValue("editedMessageColor", GREY);
+    const nameColor = colorValue("deletedNameColor", RED);
+    const deletedTextColor = pc ? pc(deletedColor) : null;
+    const edited = pc ? pc(editedColor) : null;
 
-    if (info && cfg().redName && red) { m.colorString = red; m.usernameColor = red; }
-    if (info && pc) row.backgroundHighlight = { backgroundColor: pc(RED + "26"), gutterColor: red };
+    if (info && cfg().redName && pc) {
+      if (!m.__glNameBase) m.__glNameBase = { colorString: m.colorString, usernameColor: m.usernameColor };
+      m.colorString = pc(nameColor); m.usernameColor = pc(nameColor);
+    } else if (m.__glNameBase) {
+      m.colorString = m.__glNameBase.colorString;
+      m.usernameColor = m.__glNameBase.usernameColor;
+      delete m.__glNameBase;
+    }
+    if (info && pc) row.backgroundHighlight = { backgroundColor: pc(withAlpha(deletedColor, "26")), gutterColor: deletedTextColor };
 
     const base = (m.__glOut && m.content === m.__glOut) ? m.__glBase : m.content;
     if (Array.isArray(base)) {
-      let out = info ? paint(base, red) : base;
+      let out = info ? paint(base, deletedTextColor) : base;
       if (versions) {
         let head = [];
         const start = Math.max(0, versions.length - MAX_SHOWN);
         for (let i = start; i < versions.length; i++) {
           let text = versions[i].t;
           if (cfg().showEditTime && i > 0) text += "  · edited " + fmtTime(versions[i - 1].at);
-          head = head.concat(paint([{ type: "text", content: text + "\n" }], grey));
+          head = head.concat(paint([{ type: "text", content: text + "\n" }], edited));
         }
         out = head.concat(out);
       }
       const labels = [];
       if (info && cfg().showDeletedTime) labels.push("deleted " + fmtTime(info.at));
       if (versions && cfg().showEditTime) labels.push("edited " + fmtTime(versions[versions.length - 1].at));
-      if (labels.length) out = out.concat(paint([{ type: "text", content: "  " + labels.join(" · ") }], grey));
+      if (labels.length) out = out.concat(paint([{ type: "text", content: "  " + labels.join(" · ") }], edited));
       m.__glBase = base;
       m.__glOut = out;
       m.content = out;
     }
 
     if (!info && versions && pc && !row.backgroundHighlight) {
-      row.backgroundHighlight = { backgroundColor: pc(GREY + "14"), gutterColor: pc(GREY + "80") };
+      row.backgroundHighlight = { backgroundColor: pc(withAlpha(editedColor, "14")), gutterColor: pc(withAlpha(editedColor, "80")) };
     }
   }
 
@@ -1315,10 +1370,146 @@
     return light ? { text: "#060607", sub: "#5C5E66" } : { text: "#FFFFFF", sub: "#B5BAC1" };
   }
 
+  function closeSettingsAlert() {
+    try {
+      const alerts = findByProps("openLazy", "close");
+      if (alerts && typeof alerts.close === "function") alerts.close();
+    } catch (_) {}
+  }
+
+  function MessageCacheLimitModal(props) {
+    const [value, setValue] = React.useState(String(props.initialValue || DEFAULT_RAW_BUFFER));
+    const [error, setError] = React.useState("");
+    const colors = palette();
+    const action = (label, onPress, primary) => React.createElement(RN.Pressable, {
+      key: label,
+      onPress,
+      accessibilityRole: "button",
+      style: { minHeight: 44, paddingHorizontal: 16, borderRadius: 8, marginLeft: primary ? 10 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? "#5865F2" : "rgba(128,128,128,0.22)" },
+    }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" } }, label));
+    const save = () => {
+      const count = Number(String(value).trim());
+      if (!Number.isInteger(count) || count < MIN_RAW_BUFFER || count > MAX_RAW_BUFFER) {
+        setError("Enter a whole number from " + MIN_RAW_BUFFER + " to " + MAX_RAW_BUFFER + ".");
+        return;
+      }
+      closeSettingsAlert();
+      if (typeof props.onSave === "function") props.onSave(count);
+    };
+    return React.createElement(RN.View, { style: { width: "100%", maxWidth: 440, alignSelf: "center", padding: 20, borderRadius: 14, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Maximum cached messages"),
+      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "Expanded Cache only. Higher values use more memory. Incoming messages only; no history is fetched."),
+      React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, keyboardType: "number-pad", accessibilityLabel: "Maximum cached messages", style: { minHeight: 48, paddingHorizontal: 12, borderRadius: 8, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
+      error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
+      React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", marginTop: 18 } },
+        action("Cancel", closeSettingsAlert, false), action("Save", save, true)));
+  }
+
+  function ColorSettingModal(props) {
+    const [value, setValue] = React.useState(String(props.initialValue || RED));
+    const [error, setError] = React.useState("");
+    const colors = palette();
+    const action = (label, onPress, primary) => React.createElement(RN.Pressable, {
+      key: label,
+      onPress,
+      accessibilityRole: "button",
+      style: { minHeight: 44, paddingHorizontal: 16, borderRadius: 8, marginLeft: primary ? 10 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? "#5865F2" : "rgba(128,128,128,0.22)" },
+    }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" } }, label));
+    const save = () => {
+      const hex = String(value).trim().toUpperCase();
+      if (!/^#[0-9A-F]{6}$/.test(hex)) { setError("Enter a HEX color such as #3366FF."); return; }
+      closeSettingsAlert();
+      if (typeof props.onSave === "function") props.onSave(hex);
+    };
+    const presets = [
+      ["Red", "#ED4245"], ["Orange", "#F07B3E"], ["Gold", "#F1C40F"], ["Green", "#43B581"], ["Teal", "#1ABC9C"],
+      ["Blue", "#3498DB"], ["Indigo", "#5865F2"], ["Purple", "#9B59B6"], ["Pink", "#EB459E"], ["Gray", "#80848E"],
+    ];
+    return React.createElement(RN.ScrollView, { style: { width: "100%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 20, borderRadius: 14, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, props.title || "Message color"),
+      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 12 } }, "Choose a preset or enter a HEX color."),
+      React.createElement(RN.View, { style: { flexDirection: "row", flexWrap: "wrap", marginBottom: 12 } }, presets.map(([label, hex]) => React.createElement(RN.Pressable, {
+        key: hex, onPress: () => { setValue(hex); setError(""); }, accessibilityRole: "button", accessibilityLabel: label,
+        style: { width: 62, alignItems: "center", marginRight: 6, marginBottom: 8 },
+      }, React.createElement(RN.View, { style: { width: 34, height: 34, borderRadius: 17, backgroundColor: hex, borderWidth: value.toUpperCase() === hex ? 3 : 1, borderColor: colors.text } }),
+      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 11, marginTop: 3 } }, label)))),
+      React.createElement(RN.View, { style: { width: 44, height: 24, marginBottom: 12, borderRadius: 6, backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(value) ? value : "transparent", borderWidth: 1, borderColor: colors.sub } }),
+      React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, autoCapitalize: "characters", autoCorrect: false, accessibilityLabel: "HEX color", placeholder: "#3366FF", style: { minHeight: 48, paddingHorizontal: 12, borderRadius: 8, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
+      error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
+      React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", flexWrap: "wrap", marginTop: 18 } },
+        action("Default", () => { closeSettingsAlert(); if (typeof props.onSave === "function") props.onSave(props.defaultValue); }, false),
+        action("Cancel", closeSettingsAlert, false), action("Save", save, true)));
+  }
+
+  function LogFilterModal(props) {
+    const initial = props.initialValue || {};
+    const [query, setQuery] = React.useState(initial.query || "");
+    const [from, setFrom] = React.useState(initial.from || "");
+    const [to, setTo] = React.useState(initial.to || "");
+    const [name, setName] = React.useState("");
+    const [error, setError] = React.useState("");
+    const colors = palette();
+    const current = () => ({ query: query.trim(), from: from.trim(), to: to.trim() });
+    const validate = () => {
+      const f = from.trim(), t = to.trim();
+      if ((f && !/^\d{4}-\d{2}-\d{2}$/.test(f)) || (t && !/^\d{4}-\d{2}-\d{2}$/.test(t)) || (f && Number.isNaN(Date.parse(f))) || (t && Number.isNaN(Date.parse(t)))) {
+        setError("Use dates in YYYY-MM-DD format."); return false;
+      }
+      if (f && t && f > t) { setError("The start date must be before the end date."); return false; }
+      return true;
+    };
+    const action = (label, onPress, primary) => React.createElement(RN.Pressable, {
+      key: label, onPress, accessibilityRole: "button",
+      style: { minHeight: 42, paddingHorizontal: 13, borderRadius: 8, marginLeft: primary ? 8 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? "#5865F2" : "rgba(128,128,128,0.22)" },
+    }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 14, fontWeight: "600" } }, label));
+    const field = (label, value, onChangeText, keyboardType) => React.createElement(RN.TextInput, {
+      value, onChangeText, placeholder: label, keyboardType: keyboardType || "default", autoCapitalize: "none", autoCorrect: false,
+      accessibilityLabel: label,
+      style: { minHeight: 44, paddingHorizontal: 10, marginTop: 8, borderRadius: 8, color: colors.text, backgroundColor: "rgba(128,128,128,0.16)" },
+    });
+    const apply = (filter) => {
+      if (!filter && !validate()) return;
+      closeSettingsAlert();
+      if (typeof props.onApply === "function") props.onApply(filter || current());
+    };
+    const save = () => {
+      if (!validate()) return;
+      if (!name.trim()) { setError("Enter a name for this saved filter."); return; }
+      closeSettingsAlert();
+      if (typeof props.onSave === "function") props.onSave({ ...current(), name: name.trim() });
+    };
+    const saved = Array.isArray(props.savedFilters) ? props.savedFilters : [];
+    return React.createElement(RN.ScrollView, { style: { width: "100%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 20, borderRadius: 14, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Search logs"),
+      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 13 } }, "Search matches user, channel, and message text."),
+      field("User, channel, or message", query, setQuery),
+      field("From (YYYY-MM-DD)", from, setFrom),
+      field("To (YYYY-MM-DD)", to, setTo),
+      error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
+      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 16, fontWeight: "600", marginTop: 16 } }, "Saved filters"),
+      saved.length ? saved.map((item, index) => React.createElement(RN.View, {
+        key: "saved-filter-" + index,
+        style: { flexDirection: "row", alignItems: "center", borderBottomWidth: 1, borderBottomColor: "rgba(128,128,128,0.2)" },
+      }, React.createElement(RN.Pressable, {
+        onPress: () => apply(item), accessibilityRole: "button",
+        style: { flex: 1, paddingVertical: 10 },
+      }, React.createElement(RN.Text, { style: { color: colors.text, fontSize: 14 } }, item.name || "Saved filter")),
+      React.createElement(RN.Pressable, {
+        onPress: () => { closeSettingsAlert(); if (typeof props.onDeleteFilter === "function") props.onDeleteFilter(index); },
+        accessibilityRole: "button", accessibilityLabel: "Delete saved filter " + (item.name || "Saved filter"),
+        style: { paddingHorizontal: 12, paddingVertical: 10 },
+      }, React.createElement(RN.Text, { style: { color: RED, fontSize: 14, fontWeight: "600" } }, "Delete"))))
+        : React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 13, marginTop: 8 } }, "No saved filters yet."),
+      field("Name to save this filter", name, setName),
+      React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", flexWrap: "wrap", marginTop: 16 } },
+        action("Cancel", closeSettingsAlert, false), action("Clear", () => apply({ query: "", from: "", to: "" }), false), action("Apply", () => apply(), true), action("Save filter", save, true)));
+  }
+
   function Settings() {
     vstorage.useProxy(plugin.storage);
     const [screen, setScreen] = React.useState("main");
     const [limit, setLimit] = React.useState(PAGE);
+    const [logFilter, setLogFilter] = React.useState({ query: "", from: "", to: "" });
     const [, bump] = React.useState(0);
     let settingsNavigation = null;
     try {
@@ -1378,7 +1569,62 @@
 
     const more = (total) => total > limit ? Btn("more", "Show more", () => setLimit(limit + PAGE)) : null;
 
+    const openLogFilters = () => {
+      const saved = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [];
+      try {
+        ui.alerts.showCustomAlert(LogFilterModal, {
+          initialValue: logFilter,
+          savedFilters: saved,
+          onApply: (filter) => { setLogFilter(filter); setLimit(PAGE); refreshUI(); },
+          onSave: (filter) => {
+            const next = saved.filter((item) => item.name !== filter.name);
+            next.unshift(filter);
+            cfg().savedLogFilters = next.slice(0, 20);
+            setLogFilter(filter);
+            setLimit(PAGE);
+            refreshUI();
+          },
+          onDeleteFilter: (index) => {
+            const current = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [];
+            cfg().savedLogFilters = current.filter((_, i) => i !== index);
+            refreshUI();
+          },
+        });
+      } catch (_) { toast("Could not open log filters"); }
+    };
+
     const retentionLabel = () => (cfg().retentionDays === 7 ? "7 days" : cfg().retentionDays === 30 ? "30 days" : "Forever");
+    const captureModeLabel = () => cfg().captureMode === "expanded" ? "Expanded Cache" : "Loaded Only";
+    const captureModeDescription = () => cfg().captureMode === "expanded"
+      ? "Higher memory use; retain incoming messages from channels you have not opened"
+      : "Lowest resource use; check only messages already loaded by Discord";
+    const cycleCaptureMode = () => {
+      cfg().captureMode = cfg().captureMode === "expanded" ? "loaded" : "expanded";
+      if (cfg().captureMode === "loaded") rawBuffer.clear();
+      refreshUI();
+    };
+    const editRawBufferLimit = () => {
+      try {
+        ui.alerts.showCustomAlert(MessageCacheLimitModal, {
+          initialValue: rawBufferLimit(),
+          onSave: (count) => {
+            cfg().maxCachedMessages = count;
+            trimMap(rawBuffer, count);
+            refreshUI();
+          },
+        });
+      } catch (_) { toast("Could not open cache limit settings"); }
+    };
+    const editColor = (key, title, defaultValue) => {
+      try {
+        ui.alerts.showCustomAlert(ColorSettingModal, {
+          title,
+          initialValue: colorValue(key, key === "editedMessageColor" ? GREY : RED),
+          defaultValue,
+          onSave: (value) => { cfg()[key] = value; refreshStyledMessages(); refreshUI(); },
+        });
+      } catch (_) { toast("Could not open color settings"); }
+    };
     const cycleRetention = () => {
       const cur = cfg().retentionDays || 0;
       cfg().retentionDays = cur === 0 ? 7 : cur === 7 ? 30 : 0;
@@ -1393,13 +1639,21 @@
       const entries = isDel
         ? [...deleted.entries()].map(([id, i]) => ({ id, c: i.c, g: i.g, an: i.an, t: i.t, at: i.at })).sort((a, b) => b.at - a.at)
         : [...edits.entries()].map(([id, e]) => ({ id, c: e.c, g: e.g, an: e.an, t: e.cur || (e.v[e.v.length - 1] && e.v[e.v.length - 1].t) || "", at: (e.v[e.v.length - 1] || { at: 0 }).at })).sort((a, b) => b.at - a.at);
+      const q = String(logFilter.query || "").toLowerCase();
+      const from = logFilter.from ? Date.parse(logFilter.from + "T00:00:00") : null;
+      const to = logFilter.to ? Date.parse(logFilter.to + "T23:59:59.999") : null;
+      const filtered = entries.filter((entry) => {
+        const searchable = [entry.an, entry.t, channelLabel(entry.c, entry.g)].join(" ").toLowerCase();
+        return (!q || searchable.includes(q)) && (from === null || entry.at >= from) && (to === null || entry.at <= to);
+      });
       const rows = [back(), h(RN.View, { key: "title", style: { paddingHorizontal: 16, paddingVertical: 8 } },
-        Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, (isDel ? "Deleted messages" : "Edited messages") + " (" + entries.length + ")"))];
-      if (!entries.length) rows.push(Text({ key: "empty", style: { color: C.sub, padding: 16 } }, "Nothing logged yet."));
+        Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, (isDel ? "Deleted messages" : "Edited messages") + " (" + filtered.length + ")")),
+        Btn("log-filters", "Search and filters", openLogFilters)];
+      if (!filtered.length) rows.push(Text({ key: "empty", style: { color: C.sub, padding: 16 } }, entries.length ? "No messages match this filter." : "Nothing logged yet."));
       // Build each row in its own function scope, matching the ignored-list
       // renderer. This keeps the row identity and native press callback paired
       // even on the mobile React renderer when the list is reordered.
-      entries.slice(0, limit).forEach(function (entry) {
+      filtered.slice(0, limit).forEach(function (entry) {
         const rowKind = String(kind);
         const messageId = String(entry.id);
         const channelId = entry.c == null ? null : String(entry.c);
@@ -1426,7 +1680,7 @@
           ask(authorName + " · " + fmtTime(timestamp), clip(currentText, 600), buttons);
         }));
       });
-      const m = more(entries.length);
+      const m = more(filtered.length);
       if (m) rows.push(m);
       return rows;
     };
@@ -1465,13 +1719,22 @@
       const ignoredCount = Object.keys(ig.guilds).length + Object.keys(ig.channels).length + Object.keys(ig.users).length;
       content = [
         Section("Logging"),
-        Switch("logDeleted", "Keep deleted messages", "Deleted messages stay visible in red"),
-        Switch("redName", "Red usernames", "Also color the sender's name red on deleted messages"),
-        Switch("logEdited", "Keep edited messages", "Previous versions appear in gray above the new text"),
+        Switch("logDeleted", "Keep deleted messages", "Deleted messages stay visible in the selected color"),
+        Switch("redName", "Color deleted usernames", "Apply a separate color to the sender's name", (v) => { cfg().redName = v; refreshStyledMessages(); refreshUI(); }),
+        Switch("logEdited", "Keep edited messages", "Previous versions appear above the new text in the selected color"),
         Switch("persist", "Save across restarts", "Store logged messages on this device", (v) => { setPersist(v); refreshUI(); }),
+        Switch("notifyDeleted", "Notify about deleted messages", "Show a toast for deleted messages in DMs only"),
+        Switch("notifyEdited", "Notify about edited messages", "Show a toast for edited messages in DMs only"),
+        Section("Message capture"),
+        PressRow("capture-mode", "Capture mode", captureModeDescription(), cycleCaptureMode, captureModeLabel()),
+        PressRow("cache-limit", "Maximum cached messages", "Expanded Cache only · held in memory", editRawBufferLimit, String(rawBufferLimit())),
         Section("Display"),
+        PressRow("deleted-color", "Deleted message color", "Text and highlight color", () => editColor("deletedMessageColor", "Deleted message color", RED), colorValue("deletedMessageColor", RED)),
+        PressRow("edited-color", "Edited message color", "Previous versions and edit highlights", () => editColor("editedMessageColor", "Edited message color", GREY), colorValue("editedMessageColor", GREY)),
+        PressRow("name-color", "Deleted username color", "Works when Color deleted usernames is on", () => editColor("deletedNameColor", "Deleted username color", RED), colorValue("deletedNameColor", RED)),
         Switch("showDeletedTime", "Show deletion time", "Adds \"deleted 00:45\" after deleted messages"),
         Switch("showEditTime", "Show edit time", "Adds \"edited 00:45\" after edited messages"),
+        Switch("use12HourClock", "12-hour clock", "Show times like 4:45 PM instead of 16:45"),
         Section("Filters"),
         Switch("skipOwn", "Ignore my messages", "Your own deletes and edits behave normally"),
         Switch("skipBots", "Ignore bots", "Less noise in busy bot channels"),
@@ -1491,16 +1754,19 @@
 
     content.unshift(h(RN.View, { key: "build", style: { paddingHorizontal: 16, paddingTop: 8 } },
       Text({ style: { color: C.sub, fontSize: 11 } }, "Build " + BUILD)));
-    return h(RN.ScrollView, null, ...content);
+    return h(RN.ScrollView, { key: screen }, ...content);
   }
 
   function onLoad() {
     const s = cfg();
     const defaults = {
-      logDeleted: true, logEdited: true, persist: false, redName: true, skipOwn: true, skipBots: false,
-      showDeletedTime: false, showEditTime: false, retentionDays: 0,
+      logDeleted: true, logEdited: true, persist: false, redName: true, skipOwn: true, skipBots: true,
+      showDeletedTime: false, showEditTime: false, retentionDays: 0, captureMode: "expanded", maxCachedMessages: DEFAULT_RAW_BUFFER,
+      deletedMessageColor: RED, editedMessageColor: GREY, deletedNameColor: RED, use12HourClock: false,
+      notifyDeleted: false, notifyEdited: false,
     };
     for (const k of Object.keys(defaults)) if (s[k] === undefined) s[k] = defaults[k];
+    if (s.captureMode !== "loaded" && s.captureMode !== "expanded") s.captureMode = "expanded";
     if (s.ignoreOwnDefaultMigration !== 1) {
       s.skipOwn = true;
       s.ignoreOwnDefaultMigration = 1;
@@ -1515,6 +1781,17 @@
 
     try { unpatches.push(patcher.before("dispatch", FluxDispatcher, hookDispatch)); }
     catch (_) { return; }
+    try {
+      gplBridge = {
+        active: true,
+        shouldRetainDelete: (message, channelId, guildId) => !!cfg().logDeleted && !shouldSkip(message, channelId, guildId),
+        ownsDeletedMessage: (id) => deleted.has(String(id)),
+        ownsEditedMessage: (id) => edits.has(String(id)),
+        notifiesDMDelete: (channelId) => !!cfg().logDeleted && !!cfg().notifyDeleted && isDM(getChannel(channelId)),
+        notifiesDMEdit: (channelId) => !!cfg().logEdited && !!cfg().notifyEdited && isDM(getChannel(channelId)),
+      };
+      globalThis[GPL_BRIDGE_KEY] = gplBridge;
+    } catch (_) { gplBridge = null; }
     try { renderUnpatch = patchRender(); } catch (_) {}
     try {
       ActionSheet = findByProps("openLazy", "hideActionSheet");
@@ -1548,6 +1825,8 @@
     rawSaved.clear();
     rawBuffer.clear();
     allowDelete.clear();
+    try { if (globalThis[GPL_BRIDGE_KEY] === gplBridge) delete globalThis[GPL_BRIDGE_KEY]; } catch (_) {}
+    gplBridge = null;
   }
 
   return { onLoad, onUnload, settings: Settings };

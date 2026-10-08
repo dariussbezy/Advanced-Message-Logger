@@ -14,7 +14,7 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = 2;
+  const BUILD = 3;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -130,19 +130,25 @@
     return { channels: (ig && ig.channels) || {}, guilds: (ig && ig.guilds) || {}, users: (ig && ig.users) || {} };
   }
 
-  function flipIgnore(kind, id, name) {
+  function setIgnore(kind, id, name, shouldIgnore) {
     try {
+      if (!["channels", "guilds", "users"].includes(kind) || id == null) return false;
+      id = String(id);
       const ig = JSON.parse(JSON.stringify(ignored()));
-      let now;
-      if (ig[kind][id]) { delete ig[kind][id]; now = false; }
-      else { ig[kind][id] = name || id; now = true; }
+      if (!ig[kind] || typeof ig[kind] !== "object") ig[kind] = {};
+      if (shouldIgnore) ig[kind][id] = name || id;
+      else delete ig[kind][id];
       cfg().ignored = ig;
-      toast((now ? "Logger now ignores " : "Logger no longer ignores ") + (name || id));
-      return now;
+      toast((shouldIgnore ? "Logger now ignores " : "Logger no longer ignores ") + (name || id));
+      return true;
     } catch (_) {
       toast("Could not update the logger ignore list");
       return false;
     }
+  }
+
+  function flipIgnore(kind, id, name) {
+    return setIgnore(kind, id, name, !ignored()[kind]?.[id]);
   }
 
   function shouldSkip(msg, channelId, guildId) {
@@ -894,45 +900,71 @@
         const type = componentName(node.type);
         const props = node.props;
         if (/ContextMenu/i.test(String(type || "")) && props.items && typeof props.items === "object") {
-          const items = Array.isArray(props.items) ? props.items : Object.values(props.items);
-          const hasMarker = items.some((e) => e && (e.key === marker || e.id === marker || (e.props && e.props.key === marker)));
-          if (!hasMarker) {
-            const sample = items.find((e) => e && (e.props || typeof e.label === "string"));
-            let addedItem = null;
-            if (sample && sample.props) {
-              const itemProps = { key: marker, label };
-              const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof sample.props[k] === "function");
-              if (callback) {
-                itemProps[callback] = handler;
-                itemProps.iconSource = null;
-                itemProps.IconComponent = LoggerPersonGlyph;
-                if (sample.props.index !== undefined) itemProps.index = items.length;
-                if (sample.props.lastInSection !== undefined) itemProps.lastInSection = true;
-                addedItem = React.cloneElement(sample, itemProps);
+          const cloneMenuItem = (sample, index) => {
+            if (!sample || typeof sample !== "object") return null;
+            const source = sample.props || sample;
+            const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof source[k] === "function");
+            if (!callback) return null;
+            const next = { key: marker, id: marker, label, [callback]: handler, iconSource: null, IconComponent: LoggerPersonGlyph };
+            if (source.index !== undefined) next.index = index;
+            if (source.lastInSection !== undefined) next.lastInSection = true;
+            return sample.props ? React.cloneElement(sample, next) : { ...sample, ...next };
+          };
+          const insertInRows = (rows) => {
+            if (!Array.isArray(rows)) return null;
+            if (rows.some((e) => e && (e.key === marker || e.id === marker || (e.props && e.props.key === marker)))) return rows;
+            const labels = rows.map((e) => menuText(e && (e.props || e), 0).trim());
+            const ignoreIndex = labels.findIndex((s) => /^ignore$/i.test(s));
+            const blockIndex = labels.findIndex((s) => /^block$/i.test(s));
+            const pivot = ignoreIndex >= 0 ? ignoreIndex : blockIndex;
+            const templateIndex = pivot >= 0 ? pivot : rows.findIndex((e) => cloneMenuItem(e, rows.length));
+            if (templateIndex < 0) return null;
+            const item = cloneMenuItem(rows[templateIndex], rows.length);
+            if (!item) return null;
+            const position = ignoreIndex >= 0 ? ignoreIndex + 1 : blockIndex >= 0 ? blockIndex : rows.length;
+            const nextRows = rows.slice();
+            nextRows.splice(position, 0, item);
+            return nextRows;
+          };
+          const patchItems = (items, depth, seen) => {
+            if (!items || typeof items !== "object" || depth > 12 || seen.has(items)) return null;
+            seen.add(items);
+            if (Array.isArray(items)) {
+              const inserted = insertInRows(items);
+              if (inserted) return inserted;
+              for (let i = 0; i < items.length; i++) {
+                const child = patchItems(items[i], depth + 1, seen);
+                if (child) { const next = items.slice(); next[i] = child; return next; }
               }
-            } else if (sample && typeof sample === "object") {
-              const itemCopy = { ...sample, key: marker, id: marker, label };
-              const callbackKeys = ["onPress", "onSelect", "action", "onClick", "callback"];
-              const callbacks = callbackKeys.filter((k) => typeof sample[k] === "function");
-              if (callbacks.length) {
-                for (const k of callbacks) itemCopy[k] = handler;
-                itemCopy.iconSource = null;
-                itemCopy.IconComponent = LoggerPersonGlyph;
-                if (sample.index !== undefined) itemCopy.index = items.length;
-                if (sample.lastInSection !== undefined) itemCopy.lastInSection = true;
-                addedItem = itemCopy;
+              return null;
+            }
+            if (items.props) return null;
+            const entries = Object.entries(items);
+            const labels = entries.map(([, e]) => menuText(e && (e.props || e), 0).trim());
+            const ignoreIndex = labels.findIndex((s) => /^ignore$/i.test(s));
+            const blockIndex = labels.findIndex((s) => /^block$/i.test(s));
+            if (ignoreIndex >= 0 || blockIndex >= 0) {
+              const pivot = ignoreIndex >= 0 ? ignoreIndex : blockIndex;
+              const item = cloneMenuItem(entries[pivot][1], entries.length);
+              if (item) {
+                const position = ignoreIndex >= 0 ? ignoreIndex + 1 : blockIndex;
+                const next = {};
+                entries.forEach(([key, value], index) => {
+                  if (index === position) next[marker] = item;
+                  next[key] = value;
+                });
+                if (position >= entries.length) next[marker] = item;
+                return next;
               }
             }
-            if (addedItem) {
-              // React freezes element props in some builds, so replace the
-              // collection instead of mutating Discord's original list.
-              props.items = Array.isArray(props.items)
-                ? [...props.items, addedItem]
-                : { ...props.items, [marker]: addedItem };
-              added = true;
-              return;
+            for (const [key, value] of entries) {
+              const child = patchItems(value, depth + 1, seen);
+              if (child) return { ...items, [key]: child };
             }
-          }
+            return null;
+          };
+          const nextItems = patchItems(props.items, 0, new Set());
+          if (nextItems) { props.items = nextItems; added = true; return; }
         }
         if (/ContextMenu/i.test(String(type || "")) && props.children != null) {
           const hadArrayChildren = Array.isArray(props.children);
@@ -1365,7 +1397,8 @@
         rows.push(Section(title));
         for (const id of ids) {
           rows.push(PressRow(kind + id, ig[kind][id], "Tap to stop ignoring", () => {
-            ask("Stop ignoring?", ig[kind][id], [{ text: "Stop ignoring", onPress: () => { flipIgnore(kind, id, ig[kind][id]); refreshUI(); } }]);
+          const entryName = ig[kind][id];
+          ask("Stop ignoring?", entryName, [{ text: "Stop ignoring", onPress: () => { setIgnore(kind, id, entryName, false); refreshUI(); } }]);
           }));
         }
       }

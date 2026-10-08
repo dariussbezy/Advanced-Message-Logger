@@ -1,6 +1,6 @@
 {
   "name": "Adv. Message Logger",
-  "description": "Log deleted and edited messages in Kettu, jump back to them, and filter logs by server, channel, DM, or user.",
+  "description": "A very stable message logger that logs deleted and edited messages in Kettu, jump back to them, and filter logs by server, channel, DM, or user. Check the plugin settings to configure it!",
   "authors": [
     {
       "name": "dariussbezy"

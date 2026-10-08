@@ -455,49 +455,43 @@
 
   function jumpTo(channelId, guildId, messageId, navigation) {
     const real = messageId && !String(messageId).startsWith("test-") ? messageId : null;
-    const navigators = [];
-    let current = navigation;
-    for (let depth = 0; current && depth < 5; depth++) {
-      navigators.push(current);
-      try { current = typeof current.getParent === "function" ? current.getParent() : null; }
-      catch (_) { current = null; }
-    }
-    // Close each settings route in order. Navigation state updates between
-    // calls, so repeated immediate goBack() calls only close the top route.
-    const closeSettings = (navigatorIndex, backsOnNavigator) => {
-      if (navigatorIndex >= navigators.length) return selectAfterClose();
-      const nav = navigators[navigatorIndex];
-      let canGoBack = false;
-      try { canGoBack = typeof nav.canGoBack === "function" && nav.canGoBack(); } catch (_) {}
-      if (canGoBack && backsOnNavigator < 8 && typeof nav.goBack === "function") {
-        try { nav.goBack(); } catch (_) {}
-        setTimeout(() => closeSettings(navigatorIndex, backsOnNavigator + 1), 120);
-      } else {
-        closeSettings(navigatorIndex + 1, 0);
-      }
-    };
     const selectAfterClose = () => {
-      // Give the final settings screen time to unmount before selecting the DM.
       setTimeout(() => {
-      try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
-      if (!real) return;
-      const actions = findByProps("jumpToMessage");
-      if (!actions || typeof actions.jumpToMessage !== "function") {
-        toast("Could not find Kettu's message navigation action");
-        return;
-      }
-      // Let the channel selection render before asking the message list to jump.
-      setTimeout(() => {
-        try {
-          actions.jumpToMessage({ channelId, messageId: real, flash: true, jumpType: "INSTANT" });
-        } catch (_) {
-          try { actions.jumpToMessage(channelId, real, true); }
-          catch (_) { toast("Kettu could not jump to that message"); }
+        try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
+        if (!real) return;
+        const actions = findByProps("jumpToMessage");
+        if (!actions || typeof actions.jumpToMessage !== "function") {
+          toast("Could not find Kettu's message navigation action");
+          return;
         }
-      }, 150);
+        setTimeout(() => {
+          try {
+            actions.jumpToMessage({ channelId, messageId: real, flash: true, jumpType: "INSTANT" });
+          } catch (_) {
+            try { actions.jumpToMessage(channelId, real, true); }
+            catch (_) { toast("Kettu could not jump to that message"); }
+          }
+        }, 150);
       }, 250);
     };
-    closeSettings(0, 0);
+    // The plugin is opened from the profile screen. Unwind the plugin's own
+    // settings routes, then dismiss that profile modal exactly once.
+    const nav = navigation;
+    let depth = 0;
+    const closeOne = () => {
+      if (!nav || depth++ >= 8) return selectAfterClose();
+      let canGoBack = false;
+      try { canGoBack = typeof nav.canGoBack === "function" && nav.canGoBack(); } catch (_) {}
+      if (canGoBack && typeof nav.goBack === "function") {
+        try { nav.goBack(); } catch (_) {}
+        return setTimeout(closeOne, 120);
+      }
+      try {
+        if (typeof nav.dismiss === "function") nav.dismiss();
+      } catch (_) {}
+      selectAfterClose();
+    };
+    closeOne();
   }
 
   function ask(title, message, buttons) {
@@ -641,23 +635,88 @@
     return found.join("; ").slice(0, 700);
   }
 
-  function findGroups(node, seen, depth, out) {
-    if (!node || typeof node !== "object" || depth > 40 || seen.has(node)) return;
-    seen.add(node);
-    if (Array.isArray(node)) {
-      const rows = node.filter((e) => {
-        const p = e && (e.props || e);
-        return p && ["onPress", "onSelect", "action", "onClick", "callback"].some((k) => typeof p[k] === "function") &&
-          !!menuText(p, 0);
-      });
-      if (rows.length) { out.push({ list: node, rows }); return; }
-      for (const c of node) findGroups(c, seen, depth + 1, out);
-      return;
-    }
-    if (node.props) {
-      findGroups(node.props.items, seen, depth + 1, out);
-      findGroups(node.props.children, seen, depth + 1, out);
-    }
+  function isMenuRow(node) {
+    const type = componentName(node && node.type);
+    const props = node && node.props;
+    return !!(props && /^(ActionSheetRow|ContextMenuItem)$/.test(type) &&
+      typeof props.label === "string" && typeof props.onPress === "function");
+  }
+
+  function addButtons(tree, plan) {
+    if (!tree || !plan || !plan.length) return null;
+    const markers = new Set(plan.map((item) => item.key));
+    let alreadyAdded = false;
+    const inspect = (node, depth, seen) => {
+      if (!node || typeof node !== "object" || depth > 40 || seen.has(node)) return;
+      seen.add(node);
+      if (Array.isArray(node)) {
+        for (const child of node) {
+          const key = child && (child.key || (child.props && child.props.key));
+          if (typeof key === "string" && Array.from(markers).some((marker) => key.indexOf(marker) === 0)) alreadyAdded = true;
+          inspect(child, depth + 1, seen);
+        }
+      } else if (node.props) {
+        inspect(node.props.items, depth + 1, seen);
+        inspect(node.props.children, depth + 1, seen);
+      }
+    };
+    inspect(tree, 0, new Set());
+    if (alreadyAdded) return null;
+
+    const makeRows = (template) => plan.map((item) => {
+      const original = template.props;
+      const press = () => {
+        try {
+          try { ActionSheet && ActionSheet.hideActionSheet && ActionSheet.hideActionSheet(); } catch (_) {}
+          item.press();
+        } catch (_) { toast("Could not apply this logger action"); }
+      };
+      const props = { key: item.key, label: item.label, onPress: press };
+      if (/^ActionSheetRow$/.test(componentName(template.type))) {
+        props.icon = null;
+        props.trailing = null;
+      } else {
+        props.iconSource = null;
+        props.IconComponent = undefined;
+      }
+      return React.cloneElement(template, props);
+    });
+
+    let inserted = false;
+    const rewrite = (node, depth, seen) => {
+      if (!node || typeof node !== "object" || depth > 40 || seen.has(node)) return node;
+      seen.add(node);
+      if (Array.isArray(node)) {
+        const directRows = node.filter(isMenuRow);
+        if (directRows.length) {
+          const closeIndex = node.findIndex((row) => isMenuRow(row) && /^close (dm|group)/i.test(row.props.label));
+          const position = closeIndex >= 0 ? closeIndex + 1 : node.length;
+          const next = node.slice();
+          next.splice(position, 0, ...makeRows(directRows[0]));
+          inserted = true;
+          return next;
+        }
+        let changed = false;
+        const next = node.map((child) => {
+          const result = rewrite(child, depth + 1, seen);
+          if (result !== child) changed = true;
+          return result;
+        });
+        return changed ? next : node;
+      }
+      if (!node.props) return node;
+      const props = node.props;
+      const nextProps = {};
+      let changed = false;
+      for (const key of Object.keys(props)) {
+        const value = (key === "children" || key === "items") ? rewrite(props[key], depth + 1, seen) : props[key];
+        nextProps[key] = value;
+        if (value !== props[key]) changed = true;
+      }
+      return changed ? React.cloneElement(node, nextProps) : node;
+    };
+    const result = rewrite(tree, 0, new Set());
+    return inserted ? result : null;
   }
 
   function pickIcon(kind) {
@@ -687,52 +746,6 @@
     return undefined;
   }
 
-  function addButtons(tree, plan) {
-    const groups = [];
-    findGroups(tree, new Set(), 0, groups);
-    if (!groups.length) return;
-    if (groups.some((g) => g.list.some((e) => {
-      const key = e && (e.key || (e.props && e.props.key));
-      return typeof key === "string" && key.includes("bml-");
-    }))) return;
-    const last = groups[groups.length - 1];
-    const neutral = groups.length > 1 ? groups[groups.length - 2] : last;
-    const tpl = neutral.rows[0];
-    const tplProps = tpl.props || tpl;
-    const handlerKeys = ["onPress", "onSelect", "action", "onClick", "callback"];
-    let anchorGroup = null;
-    let anchorRow = null;
-    for (const g of groups) {
-      const r = g.rows.find((e) => {
-        const p = e.props || e;
-        return /^close (dm|group)/i.test(menuText(p, 0));
-      });
-      if (r) { anchorGroup = g; anchorRow = r; break; }
-    }
-    const elements = plan.map((item) => {
-      const press = () => {
-        try {
-          try { ActionSheet && ActionSheet.hideActionSheet && ActionSheet.hideActionSheet(); } catch (_) {}
-          item.press();
-        } catch (_) { toast("Could not apply this logger action"); }
-      };
-      const props = { key: item.key };
-      if (tplProps.message != null) props.message = item.label;
-      else if (tplProps.label != null) props.label = item.label;
-      else if (tplProps.text != null) props.text = item.label;
-      else if (tplProps.title != null) props.title = item.label;
-      else if (typeof tplProps.children === "string") props.children = item.label;
-      for (const k of handlerKeys) if (typeof tplProps[k] === "function") props[k] = press;
-      if (!handlerKeys.some((k) => typeof tplProps[k] === "function")) props.onPress = press;
-      const icon = withIcon(tpl, pickIcon(item.icon));
-      if (icon !== undefined) props[tpl.props ? "icon" : (tpl.iconSource !== undefined ? "iconSource" : "icon")] = icon;
-      return tpl.props ? React.cloneElement(tpl, props) : { ...tpl, ...props };
-    });
-    if (anchorGroup) anchorGroup.list.splice(anchorGroup.list.indexOf(anchorRow) + 1, 0, ...elements);
-    else last.list.splice(0, 0, ...elements);
-    return true;
-  }
-
   function hookSheet(args) {
     try {
       const [component, key, ctx] = args;
@@ -747,12 +760,13 @@
         const un = patcher.after("default", instance, (_, tree) => {
           React.useEffect(() => () => { un(); }, []);
           try {
-            const inserted = addButtons(tree, plan);
+            const updatedTree = addButtons(tree, plan);
             if (cfg().devMenus && typeof key === "string") {
               seenMenus.set(key, Object.keys(ctx || {}).slice(0, 8).join(",") +
-                (inserted ? " [inserted in rendered menu]" : " [menu rows not recognized] " + menuTreeSummary(tree)));
+                (updatedTree ? " [inserted in rendered menu]" : " [menu rows not recognized] " + menuTreeSummary(tree)));
               trimMap(seenMenus, 30);
             }
+            if (updatedTree) return updatedTree;
           } catch (_) {}
         });
       });
@@ -777,39 +791,63 @@
         const props = node.props;
         if (/ContextMenu/i.test(String(type || "")) && props.items && typeof props.items === "object") {
           const items = Array.isArray(props.items) ? props.items : Object.values(props.items);
-          const appendItem = (item) => {
-            // React freezes element props in some builds. Replace the items
-            // collection instead of mutating the one owned by Discord.
-            props.items = Array.isArray(props.items)
-              ? [...props.items, item]
-              : { ...props.items, [marker]: item };
-            return true;
-          };
-          if (!items.some((e) => e && (e.key === marker || e.id === marker || (e.props && e.props.key === marker)))) {
+          const hasMarker = items.some((e) => e && (e.key === marker || e.id === marker || (e.props && e.props.key === marker)));
+          if (!hasMarker) {
             const sample = items.find((e) => e && (e.props || typeof e.label === "string"));
+            let addedItem = null;
             if (sample && sample.props) {
               const itemProps = { key: marker, label };
               const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof sample.props[k] === "function");
-              if (!callback) return false;
-              itemProps[callback] = handler;
-              if (sample.props.index !== undefined) itemProps.index = items.length;
-              if (sample.props.lastInSection !== undefined) itemProps.lastInSection = true;
-              if (!appendItem(React.cloneElement(sample, itemProps))) return;
+              if (callback) {
+                itemProps[callback] = handler;
+                if (sample.props.index !== undefined) itemProps.index = items.length;
+                if (sample.props.lastInSection !== undefined) itemProps.lastInSection = true;
+                addedItem = React.cloneElement(sample, itemProps);
+              }
             } else if (sample && typeof sample === "object") {
-              const addedItem = { ...sample, key: marker, id: marker, label };
+              const itemCopy = { ...sample, key: marker, id: marker, label };
               const callbackKeys = ["onPress", "onSelect", "action", "onClick", "callback"];
               const callbacks = callbackKeys.filter((k) => typeof sample[k] === "function");
-              if (!callbacks.length) return false;
-              for (const k of callbacks) addedItem[k] = handler;
-              if (sample.index !== undefined) addedItem.index = items.length;
-              if (sample.lastInSection !== undefined) addedItem.lastInSection = true;
-              if (!appendItem(addedItem)) return;
-            } else {
+              if (callbacks.length) {
+                for (const k of callbacks) itemCopy[k] = handler;
+                if (sample.index !== undefined) itemCopy.index = items.length;
+                if (sample.lastInSection !== undefined) itemCopy.lastInSection = true;
+                addedItem = itemCopy;
+              }
+            }
+            if (addedItem) {
+              // React freezes element props in some builds, so replace the
+              // collection instead of mutating Discord's original list.
+              props.items = Array.isArray(props.items)
+                ? [...props.items, addedItem]
+                : { ...props.items, [marker]: addedItem };
+              added = true;
               return;
             }
           }
-          added = true;
-          return;
+        }
+        if (/ContextMenu/i.test(String(type || "")) && Array.isArray(props.children)) {
+          const rows = props.children;
+          const template = rows.find((row) => isMenuRow(row) && /ContextMenuItem/.test(componentName(row.type)));
+          if (template) {
+            const childProps = {
+              key: marker,
+              label,
+              onPress: handler,
+              index: rows.length,
+              lastInSection: true,
+              iconSource: null,
+              IconComponent: undefined,
+            };
+            const ignoreIndex = rows.findIndex((row) => isMenuRow(row) && /^ignore$/i.test(row.props.label));
+            const blockIndex = rows.findIndex((row) => isMenuRow(row) && /^block$/i.test(row.props.label));
+            const position = ignoreIndex >= 0 ? ignoreIndex + 1 : blockIndex >= 0 ? blockIndex : rows.length;
+            const nextChildren = rows.slice();
+            nextChildren.splice(position, 0, React.cloneElement(template, childProps));
+            props.children = nextChildren;
+            added = true;
+            return;
+          }
         }
         visit(props.items, depth + 1);
         visit(props.children, depth + 1);

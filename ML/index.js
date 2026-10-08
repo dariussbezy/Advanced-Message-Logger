@@ -14,7 +14,6 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
-  const MAX_PINGS = 100;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -33,7 +32,6 @@
   const allowDelete = new Map();
   const seenMenus = new Map();
   const unpatches = [];
-  let pings = [];
   let ActionSheet;
   let MessageStore;
   let UserStore;
@@ -44,7 +42,6 @@
   let renderUnpatch = null;
   let renderErrors = 0;
   let dirty = false;
-  let pingDirty = false;
   let saveTimer = null;
   let appStateSub = null;
 
@@ -161,8 +158,6 @@
       const last = en.v && en.v[en.v.length - 1];
       if (!last || last.at < cutoff) { edits.delete(id); changed = true; }
     }
-    const kept = pings.filter((p) => p.at >= cutoff);
-    if (kept.length !== pings.length) { pings = kept; changed = true; pingDirty = true; }
     return changed;
   }
 
@@ -174,18 +169,12 @@
     dirty = true;
     schedule();
   }
-  function markPingDirty() {
-    pingDirty = true;
-    schedule();
-  }
 
   function flush() {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
-    if (!dirty && !pingDirty) return;
+    if (!dirty) return;
     const wasDirty = dirty;
-    const wasPing = pingDirty;
     dirty = false;
-    pingDirty = false;
     try {
       const changed = purge();
       if ((wasDirty || changed) && cfg().persist) {
@@ -201,7 +190,6 @@
         for (const [id, en] of edits) ed[id] = en;
         cfg().saved = { v: 2, deleted: del, edits: ed };
       }
-      if (wasPing || changed) cfg().pings = pings.slice();
     } catch (_) {}
   }
 
@@ -281,49 +269,6 @@
     }, 0);
   }
 
-  function isReplyToMe(msg, channelId, me) {
-    const ref = msg.messageReference;
-    if (!ref) return false;
-    const refId = ref.message_id || ref.messageId;
-    const refChannel = ref.channel_id || ref.channelId || channelId;
-    const target = refId ? getMessage(refChannel, refId) : null;
-    if (target && target.author && target.author.id === me) return true;
-    const embedded = msg.referencedMessage && msg.referencedMessage.message;
-    const alt = embedded || msg.referenced_message;
-    return !!(alt && alt.author && alt.author.id === me);
-  }
-
-  function mentionsMe(msg, me) {
-    if (msg.mentioned === true) return true;
-    try {
-      for (const m of msg.mentions || []) {
-        if ((typeof m === "string" ? m : m && m.id) === me) return true;
-      }
-    } catch (_) {}
-    return false;
-  }
-
-  function checkGhostPing(msg, channelId, guildId) {
-    const s = cfg();
-    if (!s.ghostPing) return;
-    const me = myId();
-    if (!me || !msg.author || msg.author.id === me) return;
-    let kind = null;
-    if (s.pingDMs && isDM(getChannel(channelId))) kind = "dm";
-    if (!kind && s.pingReplies && isReplyToMe(msg, channelId, me)) kind = "reply";
-    if (!kind && s.pingMentions && mentionsMe(msg, me)) kind = "mention";
-    if (!kind || pings.some((p) => p.id === msg.id)) return;
-    const entry = {
-      id: msg.id, c: channelId, g: guildId || null, ai: msg.author.id, an: nameOf(msg.author),
-      t: clip(msg.content, 300), k: kind, at: Date.now(),
-    };
-    pings.unshift(entry);
-    if (pings.length > MAX_PINGS) pings.length = MAX_PINGS;
-    markPingDirty();
-    const what = kind === "dm" ? "deleted a message in your DM" : kind === "reply" ? "deleted a reply to you" : "deleted a message that mentioned you";
-    toast("Ghost ping: " + entry.an + " " + what);
-  }
-
   function markDeleted(msg, channelId, id, guildId) {
     const info = {
       c: channelId, g: guildId || null, ai: msg.author && msg.author.id, an: nameOf(msg.author),
@@ -346,7 +291,7 @@
     refresh(msg, channelId, id, guildId);
   }
 
-  const blocked = () => ({ type: "GHOST_LOGGER_BLOCKED" });
+  const blocked = (original) => ({ type: "MESSAGE_LOGGER_BLOCKED", original });
 
   function isAllowed(id) {
     const until = allowDelete.get(id);
@@ -359,10 +304,9 @@
     if (!msg) return null;
     const guildId = e.guildId || guildOf(e.channelId);
     if (shouldSkip(msg, e.channelId, guildId)) return null;
-    checkGhostPing(msg, e.channelId, guildId);
     if (!cfg().logDeleted) return null;
     markDeleted(msg, e.channelId, e.id, guildId);
-    return blocked();
+    return blocked(e);
   }
 
   function onBulkDelete(e) {
@@ -370,17 +314,16 @@
     if (e.ids.length && e.ids.every(isAllowed)) return null;
     const guildId = e.guildId || guildOf(e.channelId);
     const pass = [];
-    let kept = 0;
+    const keptIds = [];
     for (const id of e.ids) {
       const msg = getMessage(e.channelId, id);
       if (!msg || shouldSkip(msg, e.channelId, guildId)) { pass.push(id); continue; }
-      checkGhostPing(msg, e.channelId, guildId);
       if (!cfg().logDeleted) { pass.push(id); continue; }
       markDeleted(msg, e.channelId, id, guildId);
-      kept++;
+      keptIds.push(id);
     }
-    if (!kept) return null;
-    return pass.length ? { ...e, ids: pass } : blocked();
+    if (!keptIds.length) return null;
+    return pass.length ? { ...e, ids: pass, loggerKept: keptIds } : blocked(e);
   }
 
   function onEdit(e) {
@@ -402,7 +345,7 @@
     en.c = en.c || m.channel_id;
     en.cur = clip(m.content, MAX_SNIPPET);
     en.v.push({ t: text, at: Date.parse(m.edited_timestamp) || Date.now() });
-    if (en.v.length > MAX_VERSIONS) en.v.shift();
+    if (en.v.length > MAX_VERSIONS) { en.v.shift(); en.trimmed = true; }
     markDirty();
   }
 
@@ -485,11 +428,11 @@
       rawSaved.delete(id);
       allowDelete.set(id, Date.now() + 5000);
       setTimeout(() => {
-        try { FluxDispatcher.dispatch({ type: "MESSAGE_DELETE", id, channelId, guildId }); } catch (_) {}
+        try { FluxDispatcher.dispatch({ type: "MESSAGE_DELETE", id, channelId, guildId, loggerRemoval: true }); } catch (_) {}
         setTimeout(() => {
           try {
             if (getMessage(channelId, id)) {
-              FluxDispatcher.dispatch({ type: "MESSAGE_DELETE_BULK", ids: [id], channelId, guildId });
+              FluxDispatcher.dispatch({ type: "MESSAGE_DELETE_BULK", ids: [id], channelId, guildId, loggerRemoval: true });
             }
           } catch (_) {}
           setTimeout(() => allowDelete.delete(id), 5000);
@@ -502,19 +445,37 @@
     markDirty();
   }
 
-  function removePing(id) {
-    pings = pings.filter((p) => p.id !== id);
-    markPingDirty();
+  const JUMP_METHODS = ["App link", "Jump action (experimental)", "System link"];
+
+  function jumpApp(channelId, guildId, messageId, link) {
+    const u = metro.common.url || findByProps("openURL", "openDeeplink");
+    if (u && typeof u.openURL === "function") { u.openURL(link); return true; }
+    return false;
+  }
+
+  function jumpAction(channelId, guildId, messageId) {
+    const actions = findByProps("jumpToMessage");
+    if (!actions || typeof actions.jumpToMessage !== "function") return false;
+    try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
+    if (messageId) actions.jumpToMessage({ channelId, messageId, flash: true, jumpType: "ANIMATED" });
+    return true;
+  }
+
+  function jumpSystem(channelId, guildId, messageId, link) {
+    const u = metro.common.url || findByProps("openDeeplink");
+    if (u && typeof u.openDeeplink === "function") { u.openDeeplink(link); return true; }
+    RN.Linking.openURL(link);
+    return true;
   }
 
   function jumpTo(channelId, guildId, messageId) {
-    const link = "https://discord.com/channels/" + (guildId || "@me") + "/" + channelId + (messageId ? "/" + messageId : "");
-    try {
-      const u = metro.common.url || findByProps("openDeeplink");
-      if (u && typeof u.openDeeplink === "function") { u.openDeeplink(link); return; }
-      if (u && typeof u.openURL === "function") { u.openURL(link); return; }
-    } catch (_) {}
-    try { RN.Linking.openURL(link); } catch (_) {}
+    const real = messageId && !String(messageId).startsWith("test-") ? messageId : null;
+    const link = "https://discord.com/channels/" + (guildId || "@me") + "/" + channelId + (real ? "/" + real : "");
+    const method = cfg().jumpMethod || 1;
+    const order = method === 2 ? [jumpAction, jumpApp, jumpSystem] : method === 3 ? [jumpSystem, jumpApp] : [jumpApp, jumpAction, jumpSystem];
+    for (const fn of order) {
+      try { if (fn(channelId, guildId, real, link)) return; } catch (_) {}
+    }
   }
 
   function ask(title, message, buttons) {
@@ -554,7 +515,7 @@
       const gn = guildName(guildId) || guildId;
       buttons.push({ text: (ig.guilds[guildId] ? "Stop ignoring " : "Ignore ") + "this server", onPress: () => flipIgnore("guilds", guildId, gn) });
     }
-    if (buttons.length) ask("Basic Message Logger", "Choose what the logger should ignore.", buttons);
+    if (buttons.length) ask("Advanced Message Logger", "Choose what the logger should ignore.", buttons);
   }
 
   function messagePlan(message) {
@@ -564,34 +525,72 @@
     if (en && en.v.length) plan.push({ key: "bml-view-edits", label: "View edit history", icon: "history", press: () => showEdits(message) });
     if (deleted.has(message.id)) plan.push({ key: "bml-remove-log", label: "Remove logged message", icon: "trash", press: () => removeLog(message) });
     else if (en) plan.push({ key: "bml-remove-log", label: "Remove edit history", icon: "trash", press: () => removeLog(message) });
-    plan.push({ key: "bml-ignore", label: "Ignore in logger...", icon: "eye", press: () => askIgnore(message) });
-    return plan;
+    if (cfg().msgMenuIgnore) plan.push({ key: "bml-ignore", label: "Ignore in logger...", icon: "eye", press: () => askIgnore(message) });
+    return plan.length ? plan : null;
+  }
+
+  function inspectCtx(ctx) {
+    let channel = null;
+    let guild = null;
+    let user = null;
+    const asChannel = (v) => {
+      if (channel || !v) return;
+      const id = typeof v === "string" ? v : typeof v === "object" ? v.id : null;
+      const c = id ? getChannel(id) : null;
+      if (c) channel = c;
+    };
+    asChannel(ctx.channel);
+    asChannel(ctx.channelId);
+    asChannel(ctx.channel_id);
+    if (!channel) {
+      for (const k of Object.keys(ctx)) {
+        const v = ctx[k];
+        if (v && typeof v === "object" && v.id && v.type !== undefined) asChannel(v);
+        if (channel) break;
+      }
+    }
+    try {
+      const gid = (ctx.guild && ctx.guild.id) || ctx.guildId || ctx.guild_id;
+      if (gid) guild = GuildStore.getGuild(gid) || null;
+      user = ctx.user || ctx.recipient || (ctx.member && ctx.member.user) || (ctx.userId && UserStore.getUser(ctx.userId)) || null;
+    } catch (_) {}
+    return { channel, guild, user };
+  }
+
+  function ignoreItem(kind, id, name, word) {
+    const on = !!ignored()[kind][id];
+    return {
+      key: "bml-ignore-" + kind,
+      label: (on ? "Stop ignoring this " : "Ignore this ") + word + " in logger",
+      icon: "eye",
+      press: () => flipIgnore(kind, id, name),
+    };
   }
 
   function scopePlan(key, ctx) {
     if (typeof key !== "string" || !ctx || typeof ctx !== "object" || SKIP_MENU.test(key)) return null;
-    const make = (kind, id, name, word) => {
-      const on = !!ignored()[kind][id];
-      return [{
-        key: "bml-ignore-" + kind,
-        label: (on ? "Stop ignoring this " : "Ignore this ") + word + " in logger",
-        icon: "eye",
-        press: () => flipIgnore(kind, id, name),
-      }];
-    };
+    const item = (kind, id, name, word) => ({
+      key: "bml-ignore-" + kind + "-" + id,
+      label: (ignored()[kind][id] ? "Stop ignoring this " : "Ignore this ") + word + " in logger",
+      icon: "eye",
+      press: () => flipIgnore(kind, id, name),
+    });
     try {
-      if (/guild|server/i.test(key)) {
-        const g = ctx.guild || (ctx.guildId && GuildStore.getGuild(ctx.guildId));
-        if (g && g.id) return make("guilds", g.id, g.name || g.id, "server");
+      const user = ctx.user || (ctx.userId && UserStore.getUser(ctx.userId));
+      const channel = ctx.channel || getChannel(ctx.channelId);
+      const guild = ctx.guild || (ctx.guildId && GuildStore.getGuild(ctx.guildId));
+      if (/user|profile|member/i.test(key) && user && user.id) return [item("users", user.id, nameOf(user), "user")];
+      if (channel && channel.id) {
+        const plan = [item("channels", channel.id, channelLabel(channel.id, channel.guild_id), isDM(channel) ? "DM" : "channel")];
+        if (channel.type === 1) {
+          const rid = channel.recipients && channel.recipients[0];
+          const other = rid && UserStore.getUser(rid);
+          if (other && other.id) plan.push(item("users", other.id, nameOf(other), "user"));
+        }
+        return plan;
       }
-      if (/channel|dm|thread/i.test(key)) {
-        const c = ctx.channel || getChannel(ctx.channelId);
-        if (c && c.id) return make("channels", c.id, channelLabel(c.id, c.guild_id), isDM(c) ? "DM" : "channel");
-      }
-      if (/user|profile|member/i.test(key)) {
-        const u = ctx.user || (ctx.userId && UserStore.getUser(ctx.userId));
-        if (u && u.id) return make("users", u.id, nameOf(u), "user");
-      }
+      if (guild && guild.id) return [item("guilds", guild.id, guild.name || guild.id, "server")];
+      if (user && user.id) return [item("users", user.id, nameOf(user), "user")];
     } catch (_) {}
     return null;
   }
@@ -643,6 +642,12 @@
     const last = groups[groups.length - 1];
     const neutral = groups.length > 1 ? groups[groups.length - 2] : last;
     const tpl = neutral.rows[0];
+    let anchorGroup = null;
+    let anchorRow = null;
+    for (const g of groups) {
+      const r = g.rows.find((e) => /^close (dm|group)/i.test(String(e.props.message || e.props.label || "")));
+      if (r) { anchorGroup = g; anchorRow = r; break; }
+    }
     const elements = plan.map((item) => {
       const props = {
         key: item.key,
@@ -657,18 +662,19 @@
       if (icon !== undefined) props.icon = icon;
       return React.cloneElement(tpl, props);
     });
-    last.list.splice(0, 0, ...elements);
+    if (anchorGroup) anchorGroup.list.splice(anchorGroup.list.indexOf(anchorRow) + 1, 0, ...elements);
+    else last.list.splice(0, 0, ...elements);
   }
 
   function hookSheet(args) {
     try {
       const [component, key, ctx] = args;
       if (!component || typeof component.then !== "function") return;
-      if (typeof key === "string" && cfg().devMenus && !seenMenus.has(key)) {
-        seenMenus.set(key, Object.keys(ctx || {}).slice(0, 8).join(","));
+      const plan = key === "MessageLongPressActionSheet" ? messagePlan(ctx && ctx.message) : scopePlan(key, ctx);
+      if (typeof key === "string" && cfg().devMenus) {
+        seenMenus.set(key, Object.keys(ctx || {}).slice(0, 8).join(",") + (plan && plan.length ? " [button added]" : " [no button]"));
         trimMap(seenMenus, 30);
       }
-      const plan = key === "MessageLongPressActionSheet" ? messagePlan(ctx && ctx.message) : scopePlan(key, ctx);
       if (!plan || !plan.length) return;
       component.then((instance) => {
         const un = patcher.after("default", instance, (_, tree) => {
@@ -677,6 +683,37 @@
         });
       });
     } catch (_) {}
+  }
+
+  const seenComps = new Map();
+  let compOffs = [];
+
+  function startCompScan() {
+    stopCompScan();
+    const rec = (args) => {
+      try {
+        const t = args[0];
+        if (!t || typeof t === "string") return;
+        const name = typeof t === "function"
+          ? (t.displayName || t.name)
+          : (t.displayName || (t.type && (t.type.displayName || t.type.name)) || (t.render && t.render.name));
+        if (!name || !/popover|menu|dropdown|overflow/i.test(name) || seenComps.has(name)) return;
+        seenComps.set(name, args[1] ? Object.keys(args[1]).slice(0, 8).join(",") : "");
+        trimMap(seenComps, 40);
+      } catch (_) {}
+    };
+    try {
+      const rt = findByProps("jsx", "jsxs");
+      if (rt) {
+        compOffs.push(patcher.before("jsx", rt, rec));
+        compOffs.push(patcher.before("jsxs", rt, rec));
+      }
+    } catch (_) {}
+    try { compOffs.push(patcher.before("createElement", React, rec)); } catch (_) {}
+  }
+
+  function stopCompScan() {
+    for (const o of compOffs.splice(0)) { try { o(); } catch (_) {} }
   }
 
   function paint(nodes, color) {
@@ -726,7 +763,12 @@
       let out = info ? paint(base, red) : base;
       if (versions) {
         let head = [];
-        for (const v of versions.slice(-MAX_SHOWN)) head = head.concat(paint([{ type: "text", content: v.t + "\n" }], grey));
+        const start = Math.max(0, versions.length - MAX_SHOWN);
+        for (let i = start; i < versions.length; i++) {
+          let text = versions[i].t;
+          if (cfg().showEditTime && i > 0) text += "  · edited " + fmtTime(versions[i - 1].at);
+          head = head.concat(paint([{ type: "text", content: text + "\n" }], grey));
+        }
         out = head.concat(out);
       }
       const labels = [];
@@ -748,7 +790,7 @@
     if (renderErrors >= 3 && renderUnpatch) {
       try { renderUnpatch(); } catch (_) {}
       renderUnpatch = null;
-      toast("Basic Message Logger: message styling disabled after repeated errors");
+      toast("Advanced Message Logger: message styling disabled after repeated errors");
     }
   }
 
@@ -758,7 +800,7 @@
       try { RM = findByName("RowManager", false)?.default; } catch (_) {}
     }
     if (!RM || !RM.prototype || typeof RM.prototype.generate !== "function") {
-      toast("Basic Message Logger: could not find the message renderer");
+      toast("Advanced Message Logger: could not find the message renderer");
       return null;
     }
     return patcher.after("generate", RM.prototype, (args, ret) => {
@@ -773,6 +815,58 @@
       light = !!ThemeStore && ThemeStore.theme === "light";
     } catch (_) {}
     return light ? { text: "#060607", sub: "#5C5E66" } : { text: "#FFFFFF", sub: "#B5BAC1" };
+  }
+
+  const SCAN_MATCH = /menu|popover|dropdown|context|overflow|profile|sheet|action/i;
+  const SCAN_SECONDS = 30;
+  let scanning = false;
+  let scanText = "";
+
+  function recordType(found, type, props) {
+    if (!type || typeof type === "string") return;
+    let name = null;
+    if (typeof type === "function") name = type.displayName || type.name;
+    else if (typeof type === "object") {
+      const inner = type.type || type.render;
+      name = type.displayName || (inner && (inner.displayName || inner.name));
+    }
+    if (!name || !SCAN_MATCH.test(name)) return;
+    let entry = found.get(name);
+    if (!entry) {
+      let keys = "";
+      try { keys = props ? Object.keys(props).slice(0, 12).join(",") : ""; } catch (_) {}
+      entry = { n: 0, keys };
+      found.set(name, entry);
+    }
+    entry.n++;
+  }
+
+  function runScan(done) {
+    if (scanning) return;
+    scanning = true;
+    scanText = "";
+    const found = new Map();
+    const offs = [];
+    const rec = (args) => { try { recordType(found, args[0], args[1]); } catch (_) {} };
+    try {
+      const rt = findByProps("jsx", "jsxs");
+      if (rt) {
+        offs.push(patcher.before("jsx", rt, rec));
+        offs.push(patcher.before("jsxs", rt, rec));
+      }
+    } catch (_) {}
+    try { offs.push(patcher.before("createElement", React, rec)); } catch (_) {}
+    toast("Scanning for " + SCAN_SECONDS + "s: open a profile and its three dots menu");
+    setTimeout(() => {
+      for (const o of offs) { try { o(); } catch (_) {} }
+      scanning = false;
+      scanText = !offs.length
+        ? "Could not hook the renderer."
+        : [...found.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 40)
+            .map(([name, e]) => name + " x" + e.n + " props: " + e.keys).join("\n").slice(0, 3500) || "Nothing matched.";
+      toast("Scan finished, check the plugin settings");
+      try { done(); } catch (_) {}
+    }, SCAN_SECONDS * 1000);
   }
 
   function Settings() {
@@ -822,7 +916,7 @@
     const cycleRetention = () => {
       const cur = cfg().retentionDays || 0;
       cfg().retentionDays = cur === 0 ? 7 : cur === 7 ? 30 : 0;
-      if (purge()) { markDirty(); markPingDirty(); }
+      if (purge()) markDirty();
       refreshUI();
     };
 
@@ -852,32 +946,6 @@
       return rows;
     };
 
-    const pingsScreen = () => {
-      const label = { dm: "DM", reply: "Reply", mention: "Mention" };
-      const rows = [back(), h(RN.View, { key: "title", style: { paddingHorizontal: 16, paddingVertical: 8 } },
-        Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, "Ghost pings (" + pings.length + ")"))];
-      if (pings.length) {
-        rows.push(Btn("clear-pings", "Clear ghost ping history", () => {
-          ask("Clear ghost ping history?", "This removes every saved ghost ping.", [
-            { text: "Clear", style: "destructive", onPress: () => { pings = []; markPingDirty(); refreshUI(); } },
-          ]);
-        }, RED));
-      } else {
-        rows.push(Text({ key: "empty", style: { color: C.sub, padding: 16 } }, "No ghost pings yet."));
-      }
-      for (const p of pings.slice(0, limit)) {
-        rows.push(PressRow(p.id, snippet(p.t), label[p.k] + " · " + p.an + " · " + channelLabel(p.c, p.g) + " · " + fmtTime(p.at), () => {
-          ask(label[p.k] + " from " + p.an, clip(p.t, 600), [
-            { text: "Jump to message", onPress: () => jumpTo(p.c, p.g, p.id) },
-            { text: "Remove", style: "destructive", onPress: () => { removePing(p.id); refreshUI(); } },
-          ]);
-        }));
-      }
-      const m = more(pings.length);
-      if (m) rows.push(m);
-      return rows;
-    };
-
     const ignoredScreen = () => {
       const ig = ignored();
       const groups = [["guilds", "Servers"], ["channels", "Channels and DMs"], ["users", "Users"]];
@@ -900,7 +968,6 @@
 
     let content;
     if (screen === "deleted" || screen === "edited") content = loggedScreen(screen);
-    else if (screen === "pings") content = pingsScreen();
     else if (screen === "ignored") content = ignoredScreen();
     else {
       const ig = ignored();
@@ -914,11 +981,6 @@
         Section("Display"),
         Switch("showDeletedTime", "Show deletion time", "Adds \"deleted 00:45\" after deleted messages"),
         Switch("showEditTime", "Show edit time", "Adds \"edited 00:45\" after edited messages"),
-        Section("Ghost pings"),
-        Switch("ghostPing", "Ghost ping detector", "Notify when a message that pinged you gets deleted"),
-        Switch("pingMentions", "Mentions", "Messages that mentioned you"),
-        Switch("pingReplies", "Replies", "Replies to your messages"),
-        Switch("pingDMs", "Direct messages", "Every deleted message in your DMs"),
         Section("Filters"),
         Switch("skipOwn", "Ignore my messages", "Your own deletes and edits behave normally"),
         Switch("skipBots", "Ignore bots", "Less noise in busy bot channels"),
@@ -927,7 +989,7 @@
         Section("Logs"),
         PressRow("nav-deleted", "Deleted messages", deleted.size + " logged", () => go("deleted"), ">"),
         PressRow("nav-edited", "Edited messages", edits.size + " logged", () => go("edited"), ">"),
-        PressRow("nav-pings", "Ghost ping history", pings.length + " saved", () => go("pings"), ">"),
+        PressRow("jump", "Jump to message method", "Tap to switch if jumping opens the wrong app", () => { cfg().jumpMethod = (cfg().jumpMethod || 1) % 3 + 1; refreshUI(); }, JUMP_METHODS[(cfg().jumpMethod || 1) - 1]),
         PressRow("nav-ignored", "Ignored servers, channels and users", ignoredCount + " ignored", () => go("ignored"), ">"),
         Btn("clear", "Clear all logged messages", () => {
           ask("Clear all logged messages?", "This removes every stored deleted and edited message, including the ones saved on this device.", [
@@ -935,10 +997,23 @@
           ]);
         }, RED),
         Section("Advanced"),
-        Switch("devMenus", "Detect menus", "Lists the menus you open, useful for bug reports"),
+        Switch("msgMenuIgnore", "Ignore option in message menu", "Adds an ignore button to the message long-press menu"),
+        Switch("devMenus", "Detect menus", "Lists the menus you open, useful for bug reports. Turn off when done", (v) => {
+          cfg().devMenus = v;
+          if (v) startCompScan(); else stopCompScan();
+          refreshUI();
+        }),
+        Btn("scan", scanning ? "Scanning..." : "Scan menu components (" + SCAN_SECONDS + "s)", () => { runScan(refreshUI); refreshUI(); }),
       ];
+      if (scanText) {
+        content.push(h(RN.View, { key: "scanText", style: { paddingHorizontal: 16, paddingVertical: 8 } },
+          Text({ style: { color: C.sub, fontSize: 11 }, selectable: true }, scanText)));
+      }
       if (cfg().devMenus) {
-        const list = [...seenMenus.entries()].map(([k, v]) => k + ": " + v).join("\n") || "Open a menu, then come back.";
+        const menuLines = [...seenMenus.entries()].map(([k, v]) => k + ": " + v);
+        const compLines = [...seenComps.entries()].map(([k, v]) => k + ": " + v);
+        const list = (menuLines.length ? "Sheets:\n" + menuLines.join("\n") : "Open a menu, then come back.") +
+          (compLines.length ? "\n\nPopovers:\n" + compLines.join("\n") : "");
         content.push(h(RN.View, { key: "menus", style: { paddingHorizontal: 16, paddingVertical: 8 } },
           Text({ style: { color: C.sub, fontSize: 11 }, selectable: true }, list)));
       }
@@ -951,17 +1026,16 @@
     const s = cfg();
     const defaults = {
       logDeleted: true, logEdited: true, persist: false, redName: true, skipOwn: false, skipBots: false,
-      showDeletedTime: false, showEditTime: false, ghostPing: true, pingMentions: true, pingReplies: true,
-      pingDMs: true, retentionDays: 0, devMenus: false,
+      showDeletedTime: false, showEditTime: false, retentionDays: 0, devMenus: false, jumpMethod: 1, msgMenuIgnore: false,
     };
     for (const k of Object.keys(defaults)) if (s[k] === undefined) s[k] = defaults[k];
     if (!s.ignored) s.ignored = { channels: {}, guilds: {}, users: {} };
     renderErrors = 0;
 
-    if (!loadStores()) { toast("Basic Message Logger: required Discord modules not found"); return; }
-    try { pings = Array.isArray(s.pings) ? JSON.parse(JSON.stringify(s.pings)) : []; } catch (_) { pings = []; }
+    if (!loadStores()) { toast("Advanced Message Logger: required Discord modules not found"); return; }
+    if (s.pings) s.pings = undefined;
     if (s.persist) loadSaved();
-    if (purge()) { markDirty(); markPingDirty(); }
+    if (purge()) markDirty();
 
     try { unpatches.push(patcher.before("dispatch", FluxDispatcher, hookDispatch)); }
     catch (_) { return; }
@@ -970,9 +1044,10 @@
       ActionSheet = findByProps("openLazy", "hideActionSheet");
       if (ActionSheet) unpatches.push(patcher.before("openLazy", ActionSheet, hookSheet));
     } catch (_) {}
+    if (s.devMenus) startCompScan();
     try {
       appStateSub = RN.AppState.addEventListener("change", (state) => {
-        if (state === "active") { if (purge()) { markDirty(); markPingDirty(); } }
+        if (state === "active") { if (purge()) markDirty(); }
         else flush();
       });
     } catch (_) {}
@@ -981,6 +1056,8 @@
   function onUnload() {
     flush();
     for (const u of unpatches.splice(0)) { try { u(); } catch (_) {} }
+    stopCompScan();
+    seenComps.clear();
     if (renderUnpatch) { try { renderUnpatch(); } catch (_) {} renderUnpatch = null; }
     if (appStateSub && appStateSub.remove) { try { appStateSub.remove(); } catch (_) {} }
     appStateSub = null;
@@ -990,7 +1067,6 @@
     rawBuffer.clear();
     allowDelete.clear();
     seenMenus.clear();
-    pings = [];
   }
 
   return { onLoad, onUnload, settings: Settings };

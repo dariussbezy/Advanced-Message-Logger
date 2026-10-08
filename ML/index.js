@@ -122,13 +122,18 @@
   }
 
   function flipIgnore(kind, id, name) {
-    const ig = JSON.parse(JSON.stringify(ignored()));
-    let now;
-    if (ig[kind][id]) { delete ig[kind][id]; now = false; }
-    else { ig[kind][id] = name || id; now = true; }
-    cfg().ignored = ig;
-    toast((now ? "Logger now ignores " : "Logger no longer ignores ") + (name || id));
-    return now;
+    try {
+      const ig = JSON.parse(JSON.stringify(ignored()));
+      let now;
+      if (ig[kind][id]) { delete ig[kind][id]; now = false; }
+      else { ig[kind][id] = name || id; now = true; }
+      cfg().ignored = ig;
+      toast((now ? "Logger now ignores " : "Logger no longer ignores ") + (name || id));
+      return now;
+    } catch (_) {
+      toast("Could not update the logger ignore list");
+      return false;
+    }
   }
 
   function shouldSkip(msg, channelId, guildId) {
@@ -445,24 +450,34 @@
     markDirty();
   }
 
-  function jumpTo(channelId, guildId, messageId) {
+  function jumpTo(channelId, guildId, messageId, navigation) {
     const real = messageId && !String(messageId).startsWith("test-") ? messageId : null;
-    try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
-    if (!real) return;
-    const actions = findByProps("jumpToMessage");
-    if (!actions || typeof actions.jumpToMessage !== "function") {
-      toast("Could not find Kettu's message navigation action");
-      return;
-    }
-    // Let the channel selection render before asking the message list to jump.
-    setTimeout(() => {
-      try {
-        actions.jumpToMessage({ channelId, messageId: real, flash: true, jumpType: "INSTANT" });
-      } catch (_) {
-        try { actions.jumpToMessage(channelId, real, true); }
-        catch (_) { toast("Kettu could not jump to that message"); }
+    let settingsClosed = false;
+    try {
+      if (navigation && typeof navigation.goBack === "function") {
+        navigation.goBack();
+        settingsClosed = true;
       }
-    }, 150);
+    } catch (_) {}
+    // Let the plugin settings screen close before changing the selected channel.
+    setTimeout(() => {
+      try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
+      if (!real) return;
+      const actions = findByProps("jumpToMessage");
+      if (!actions || typeof actions.jumpToMessage !== "function") {
+        toast("Could not find Kettu's message navigation action");
+        return;
+      }
+      // Let the channel selection render before asking the message list to jump.
+      setTimeout(() => {
+        try {
+          actions.jumpToMessage({ channelId, messageId: real, flash: true, jumpType: "INSTANT" });
+        } catch (_) {
+          try { actions.jumpToMessage(channelId, real, true); }
+          catch (_) { toast("Kettu could not jump to that message"); }
+        }
+      }, 150);
+    }, settingsClosed ? 250 : 0);
   }
 
   function ask(title, message, buttons) {
@@ -541,14 +556,17 @@
     });
     try {
       const user = ctx.user || ctx.recipient || (ctx.member && ctx.member.user) || (ctx.userId && UserStore.getUser(ctx.userId));
-      const channel = ctx.channel || getChannel(ctx.channelId || ctx.channel_id);
+      const channelArg = ctx.channel;
+      const channelId = (channelArg && typeof channelArg === "object" && channelArg.id) ||
+        (typeof channelArg === "string" && channelArg) || ctx.channelId || ctx.channel_id;
+      const channel = channelArg && typeof channelArg === "object" ? channelArg : getChannel(channelId);
       const guild = ctx.guild || (ctx.guildId && GuildStore.getGuild(ctx.guildId));
       if (/user|profile|member/i.test(key) && user && user.id) return [item("users", user.id, nameOf(user), "user")];
       if (channel && channel.id) {
         const dm = isDM(channel);
         const plan = [item("channels", channel.id, channelLabel(channel.id, channel.guild_id), dm ? "DM" : "channel")];
         if (/ChannelLongPress/i.test(key) && dm && channel.type === 1) {
-          const rid = channel.recipients && channel.recipients[0];
+          const rid = channel.recipients && (channel.recipients.find((id) => id !== myId()) || channel.recipients[0]);
           const other = rid && UserStore.getUser(rid);
           if (other && other.id) plan.push(item("users", other.id, nameOf(other), "user"));
         }
@@ -564,13 +582,19 @@
     if (!node || typeof node !== "object" || depth > 40 || seen.has(node)) return;
     seen.add(node);
     if (Array.isArray(node)) {
-      const rows = node.filter((e) => e && e.props && typeof e.props.onPress === "function" &&
-        (typeof e.props.message === "string" || typeof e.props.label === "string"));
+      const rows = node.filter((e) => {
+        const p = e && (e.props || e);
+        return p && ["onPress", "onSelect", "action", "onClick"].some((k) => typeof p[k] === "function") &&
+          (typeof p.message === "string" || typeof p.label === "string");
+      });
       if (rows.length) { out.push({ list: node, rows }); return; }
       for (const c of node) findGroups(c, seen, depth + 1, out);
       return;
     }
-    if (node.props) findGroups(node.props.children, seen, depth + 1, out);
+    if (node.props) {
+      findGroups(node.props.items, seen, depth + 1, out);
+      findGroups(node.props.children, seen, depth + 1, out);
+    }
   }
 
   function pickIcon(kind) {
@@ -590,7 +614,8 @@
   }
 
   function withIcon(tpl, id) {
-    const cur = tpl.props.icon;
+    const p = tpl && (tpl.props || tpl);
+    const cur = p && (p.icon !== undefined ? p.icon : p.iconSource);
     if (!id || cur === undefined) return undefined;
     if (typeof cur === "number") return id;
     if (cur && typeof cur === "object" && cur.props && cur.props.source !== undefined) {
@@ -603,32 +628,43 @@
     const groups = [];
     findGroups(tree, new Set(), 0, groups);
     if (!groups.length) return;
-    if (groups.some((g) => g.list.some((e) => e && typeof e.key === "string" && e.key.startsWith("bml-")))) return;
+    if (groups.some((g) => g.list.some((e) => {
+      const key = e && (e.key || (e.props && e.props.key));
+      return typeof key === "string" && key.includes("bml-");
+    }))) return;
     const last = groups[groups.length - 1];
     const neutral = groups.length > 1 ? groups[groups.length - 2] : last;
     const tpl = neutral.rows[0];
+    const tplProps = tpl.props || tpl;
+    const handlerKeys = ["onPress", "onSelect", "action", "onClick"];
     let anchorGroup = null;
     let anchorRow = null;
     for (const g of groups) {
-      const r = g.rows.find((e) => /^close (dm|group)/i.test(String(e.props.message || e.props.label || "")));
+      const r = g.rows.find((e) => {
+        const p = e.props || e;
+        return /^close (dm|group)/i.test(String(p.message || p.label || ""));
+      });
       if (r) { anchorGroup = g; anchorRow = r; break; }
     }
     const elements = plan.map((item) => {
-      const props = {
-        key: item.key,
-        onPress: () => {
+      const press = () => {
+        try {
           try { ActionSheet && ActionSheet.hideActionSheet && ActionSheet.hideActionSheet(); } catch (_) {}
           item.press();
-        },
+        } catch (_) { toast("Could not apply this logger action"); }
       };
-      if (typeof tpl.props.message === "string") props.message = item.label;
-      if (typeof tpl.props.label === "string") props.label = item.label;
+      const props = { key: item.key };
+      if (typeof tplProps.message === "string") props.message = item.label;
+      if (typeof tplProps.label === "string") props.label = item.label;
+      for (const k of handlerKeys) if (typeof tplProps[k] === "function") props[k] = press;
+      if (!handlerKeys.some((k) => typeof tplProps[k] === "function")) props.onPress = press;
       const icon = withIcon(tpl, pickIcon(item.icon));
-      if (icon !== undefined) props.icon = icon;
-      return React.cloneElement(tpl, props);
+      if (icon !== undefined) props[tpl.props ? "icon" : (tpl.iconSource !== undefined ? "iconSource" : "icon")] = icon;
+      return tpl.props ? React.cloneElement(tpl, props) : { ...tpl, ...props };
     });
     if (anchorGroup) anchorGroup.list.splice(anchorGroup.list.indexOf(anchorRow) + 1, 0, ...elements);
     else last.list.splice(0, 0, ...elements);
+    return true;
   }
 
   function hookSheet(args) {
@@ -644,7 +680,14 @@
       component.then((instance) => {
         const un = patcher.after("default", instance, (_, tree) => {
           React.useEffect(() => () => { un(); }, []);
-          try { addButtons(tree, plan); } catch (_) {}
+          try {
+            const inserted = addButtons(tree, plan);
+            if (cfg().devMenus && typeof key === "string") {
+              seenMenus.set(key, Object.keys(ctx || {}).slice(0, 8).join(",") +
+                (inserted ? " [inserted in rendered menu]" : " [menu rows not recognized]"));
+              trimMap(seenMenus, 30);
+            }
+          } catch (_) {}
         });
       });
     } catch (_) {}
@@ -654,61 +697,40 @@
     if (!tree || !user || !user.id) return false;
     const marker = "bml-profile-ignore-" + user.id;
     const label = (ignored().users[user.id] ? "Stop ignoring " : "Ignore ") + nameOf(user) + " in logger";
+    const handler = () => {
+      try { flipIgnore("users", user.id, nameOf(user)); }
+      catch (_) { toast("Could not update the logger ignore list"); }
+    };
     let added = false;
     const seen = new Set();
     const visit = (node, depth) => {
       if (!node || typeof node !== "object" || depth > 40 || seen.has(node) || added) return;
       seen.add(node);
-      if (Array.isArray(node)) {
-        if (node.some((e) => e && (e.key === marker || (e.props && e.props.key === marker)))) { added = true; return; }
-        const template = node.find((e) => e && e.props && typeof e.props.label === "string" &&
-          (e.props.onPress || e.props.onSelect || e.props.action || e.props.onClick));
-        if (template) {
-          const handler = () => flipIgnore("users", user.id, nameOf(user));
-          const props = { key: marker, label };
-          const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof template.props[k] === "function") || "onPress";
-          props[callback] = handler;
-          for (const k of ["onPress", "onSelect", "action", "onClick", "callback"]) {
-            if (typeof template.props[k] === "function") props[k] = handler;
-          }
-          if (template.props.index !== undefined) props.index = node.length;
-          if (template.props.lastInSection !== undefined) props.lastInSection = true;
-          node.push(React.cloneElement(template, props));
-          added = true;
-          return;
-        }
-        const dataTemplate = node.find((e) => e && typeof e.label === "string" &&
-          ["onPress", "onSelect", "action", "onClick", "callback"].some((k) => typeof e[k] === "function"));
-        if (dataTemplate) {
-          const handler = () => flipIgnore("users", user.id, nameOf(user));
-          const copy = { ...dataTemplate, key: marker, id: marker, label };
-          const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof dataTemplate[k] === "function");
-          copy[callback] = handler;
-          node.push(copy);
-          added = true;
-          return;
-        }
-        for (const child of node) visit(child, depth + 1);
-        return;
-      }
       if (node.props) {
         const type = node.type && (node.type.displayName || node.type.name || (node.type.type && node.type.type.name));
         const props = node.props;
         if (/ContextMenu/i.test(String(type || "")) && Array.isArray(props.items)) {
           const items = props.items;
           if (!items.some((e) => e && (e.key === marker || e.id === marker || (e.props && e.props.key === marker)))) {
-            const sample = items.find((e) => e && (e.props || e.label));
+            const sample = items.find((e) => e && (e.props || typeof e.label === "string"));
             if (sample && sample.props) {
-              const handler = () => flipIgnore("users", user.id, nameOf(user));
               const itemProps = { key: marker, label };
-              const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof sample.props[k] === "function") || "onPress";
+              const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof sample.props[k] === "function") || "action";
               itemProps[callback] = handler;
-              for (const k of ["onPress", "onSelect", "action", "onClick", "callback"]) {
-                if (typeof sample.props[k] === "function") itemProps[k] = handler;
-              }
+              if (sample.props.index !== undefined) itemProps.index = items.length;
+              if (sample.props.lastInSection !== undefined) itemProps.lastInSection = true;
               items.push(React.cloneElement(sample, itemProps));
+            } else if (sample && typeof sample === "object") {
+              const addedItem = { ...sample, key: marker, id: marker, label };
+              const callbackKeys = ["onPress", "onSelect", "action", "onClick", "callback"];
+              const callbacks = callbackKeys.filter((k) => typeof sample[k] === "function");
+              if (callbacks.length) for (const k of callbacks) addedItem[k] = handler;
+              else addedItem.action = handler;
+              if (sample.index !== undefined) addedItem.index = items.length;
+              if (sample.lastInSection !== undefined) addedItem.lastInSection = true;
+              items.push(addedItem);
             } else {
-              items.push({ key: marker, id: marker, label, onPress: () => flipIgnore("users", user.id, nameOf(user)) });
+              return;
             }
           }
           added = true;
@@ -717,6 +739,7 @@
         visit(props.items, depth + 1);
         visit(props.children, depth + 1);
       }
+      if (Array.isArray(node)) for (const child of node) visit(child, depth + 1);
     };
     try { visit(tree, 0); } catch (_) {}
     return added;
@@ -927,6 +950,12 @@
     const [screen, setScreen] = React.useState("main");
     const [limit, setLimit] = React.useState(PAGE);
     const [, bump] = React.useState(0);
+    let settingsNavigation = null;
+    try {
+      const navigationModule = findByProps("useNavigation");
+      const useNavigation = navigationModule && navigationModule.useNavigation;
+      if (typeof useNavigation === "function") settingsNavigation = useNavigation();
+    } catch (_) {}
     const refreshUI = () => bump((x) => x + 1);
     const F = ui.components && ui.components.Forms;
     const C = palette();
@@ -986,7 +1015,7 @@
       for (const en of entries.slice(0, limit)) {
         rows.push(PressRow(en.id, snippet(en.t), en.an + " · " + (en.c ? channelLabel(en.c, en.g) : "Unknown channel") + " · " + fmtTime(en.at), () => {
           const buttons = [];
-          if (en.c) buttons.push({ text: "Jump to message", onPress: () => jumpTo(en.c, en.g, en.id) });
+          if (en.c) buttons.push({ text: "Jump to message", onPress: () => jumpTo(en.c, en.g, en.id, settingsNavigation) });
           if (!isDel) {
             buttons.push({ text: "Edit history", onPress: () => showEdits({ id: en.id, content: en.t }) });
           }

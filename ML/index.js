@@ -14,7 +14,7 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = 3;
+  const BUILD = 4;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -134,11 +134,19 @@
     try {
       if (!["channels", "guilds", "users"].includes(kind) || id == null) return false;
       id = String(id);
-      const ig = JSON.parse(JSON.stringify(ignored()));
-      if (!ig[kind] || typeof ig[kind] !== "object") ig[kind] = {};
+      const storage = cfg();
+      const current = storage.ignored && typeof storage.ignored === "object" ? storage.ignored : {};
+      const ig = JSON.parse(JSON.stringify({
+        channels: current.channels || {},
+        guilds: current.guilds || {},
+        users: current.users || {},
+      }));
       if (shouldIgnore) ig[kind][id] = name || id;
       else delete ig[kind][id];
-      cfg().ignored = ig;
+      storage.ignored = ig;
+      if (!!(storage.ignored && storage.ignored[kind] && storage.ignored[kind][id]) !== !!shouldIgnore) {
+        throw new Error("Ignore list update did not persist");
+      }
       toast((shouldIgnore ? "Logger now ignores " : "Logger no longer ignores ") + (name || id));
       return true;
     } catch (_) {
@@ -905,7 +913,7 @@
             const source = sample.props || sample;
             const callback = ["onPress", "onSelect", "action", "onClick", "callback"].find((k) => typeof source[k] === "function");
             if (!callback) return null;
-            const next = { key: marker, id: marker, label, [callback]: handler, iconSource: null, IconComponent: LoggerPersonGlyph };
+            const next = { key: marker, id: marker, label, [callback]: handler, iconSource: null, IconComponent: null };
             if (source.index !== undefined) next.index = index;
             if (source.lastInSection !== undefined) next.lastInSection = true;
             return sample.props ? React.cloneElement(sample, next) : { ...sample, ...next };
@@ -978,7 +986,7 @@
               index: rows.length,
               lastInSection: true,
               iconSource: null,
-              IconComponent: LoggerPersonGlyph,
+              IconComponent: null,
             };
             const ignoreIndex = rows.findIndex((row) => isMenuRow(row) && /^ignore$/i.test(row.props.label));
             const blockIndex = rows.findIndex((row) => isMenuRow(row) && /^block$/i.test(row.props.label));
@@ -1396,10 +1404,12 @@
         if (!ids.length) continue;
         rows.push(Section(title));
         for (const id of ids) {
-          rows.push(PressRow(kind + id, ig[kind][id], "Tap to stop ignoring", () => {
           const entryName = ig[kind][id];
-          ask("Stop ignoring?", entryName, [{ text: "Stop ignoring", onPress: () => { setIgnore(kind, id, entryName, false); refreshUI(); } }]);
-          }));
+          rows.push(PressRow("ignored-" + kind + "-" + id, entryName, "Tap to stop ignoring", () => {
+            // Remove directly from the tapped row's captured category and ID.
+            // Avoid a delayed Alert callback that can outlive this rendered list.
+            if (setIgnore(kind, id, entryName, false)) refreshUI();
+          }, "×"));
         }
       }
       return rows;

@@ -1,5 +1,5 @@
 {
-  "name": "Advanced Message Logger",
+  "name": "Adv. Message Logger",
   "description": "Log deleted and edited messages in Kettu, jump back to them, and filter logs by server, channel, DM, or user.",
   "authors": [
     {

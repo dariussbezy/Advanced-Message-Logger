@@ -14,7 +14,7 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = 9;
+  const BUILD = 10;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -1397,14 +1397,30 @@
         Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, (isDel ? "Deleted messages" : "Edited messages") + " (" + entries.length + ")"))];
       if (!entries.length) rows.push(Text({ key: "empty", style: { color: C.sub, padding: 16 } }, "Nothing logged yet."));
       for (const en of entries.slice(0, limit)) {
-        rows.push(PressRow(en.id, snippet(en.t), en.an + " · " + (en.c ? channelLabel(en.c, en.g) : "Unknown channel") + " · " + fmtTime(en.at), () => {
+        // Capture a stable message identity for each rendered row. Resolve the
+        // current record from its own log map when tapped, rather than keeping a
+        // loop object in callbacks that can outlive a reordered settings list.
+        const messageId = String(en.id);
+        const channelId = en.c == null ? null : String(en.c);
+        const guildId = en.g == null ? null : String(en.g);
+        const rowKey = "logged-" + kind + "-" + messageId;
+        rows.push(PressRow(rowKey, snippet(en.t), en.an + " · " + (channelId ? channelLabel(channelId, guildId) : "Unknown channel") + " · " + fmtTime(en.at), () => {
+          const record = isDel ? deleted.get(messageId) : edits.get(messageId);
+          if (!record) return;
+          const currentText = isDel
+            ? record.t
+            : record.cur || (record.v[record.v.length - 1] && record.v[record.v.length - 1].t) || "";
+          const authorName = record.an || en.an;
+          const timestamp = isDel
+            ? record.at
+            : (record.v[record.v.length - 1] || { at: en.at }).at;
           const buttons = [];
-          if (en.c) buttons.push({ text: "Jump to message", onPress: () => jumpTo(en.c, en.g, en.id, settingsNavigation) });
+          if (channelId) buttons.push({ text: "Jump to message", onPress: () => jumpTo(channelId, guildId, messageId, settingsNavigation) });
           if (!isDel) {
-            buttons.push({ text: "Edit history", onPress: () => showEdits({ id: en.id, content: en.t }) });
+            buttons.push({ text: "Edit history", onPress: () => showEdits({ id: messageId, content: currentText }) });
           }
-          buttons.push({ text: "Remove from log", style: "destructive", onPress: () => { removeLog({ id: en.id, channel_id: en.c }); refreshUI(); } });
-          ask(en.an + " · " + fmtTime(en.at), clip(en.t, 600), buttons);
+          buttons.push({ text: "Remove from log", style: "destructive", onPress: () => { removeLog({ id: messageId, channel_id: channelId }); refreshUI(); } });
+          ask(authorName + " · " + fmtTime(timestamp), clip(currentText, 600), buttons);
         }));
       }
       const m = more(entries.length);

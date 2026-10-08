@@ -14,7 +14,7 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = 7;
+  const BUILD = 8;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -1337,17 +1337,22 @@
       const rows = [back(), h(RN.View, { key: "title", style: { paddingHorizontal: 16, paddingVertical: 8 } },
         Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, "Ignored (" + total + ")"))];
         if (!total) rows.push(Text({ key: "empty", style: { color: C.sub, padding: 16 } }, "Nothing is ignored. Long-press a DM, open a profile's three-dot menu, or long-press a server or channel."));
-      for (const [kind, title] of groups) {
+      groups.forEach(function (group) {
+        const kind = group[0];
+        const title = group[1];
         const ids = Object.keys(ig[kind]);
-        if (!ids.length) continue;
+        if (!ids.length) return;
         rows.push(Section(title));
-        for (const id of ids) {
+        ids.forEach(function (id) {
           const entryName = ig[kind][id];
-          rows.push(PressRow("ignored-" + kind + "-" + id, entryName, "Tap to remove · " + title, () => {
-            confirmStopIgnoring(kind, id, entryName);
+          const rowKind = String(kind);
+          const rowId = String(id);
+          const rowName = String(entryName || id);
+          rows.push(PressRow("ignored-" + rowKind + "-" + rowId, entryName, "Tap to remove · " + title, function () {
+            confirmStopIgnoring(rowKind, rowId, rowName);
           }, "›"));
-        }
-      }
+        });
+      });
       return rows;
     };
 

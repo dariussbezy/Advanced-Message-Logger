@@ -29,6 +29,9 @@ Enable the plugin, then open its settings to choose what to log and display.
 The existing project notes report testing on iOS 27 with Kettu 1.4.3 and Discord 305.1. Android and other client versions may behave differently. Please report any discrepancies or issues you encounter.
 Please report bugs, crashes, and suggestions in the project's feedback channel.
 
+## Recommended for use with the Ghost Ping Logger plugin.
+https://github.com/dariussbezy/Ghost-Ping-Logger
+
 ## Screenshots
 
 <img width="1179" height="1428" alt="1" src="https://github.com/user-attachments/assets/633ac1ad-9b09-4d4f-aac7-4d8a2170d239" />

@@ -14,7 +14,7 @@
   const MAX_SAVED_RAW = 1000;
   const MAX_RAW_BUFFER = 500;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = 4;
+  const BUILD = 5;
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -31,7 +31,6 @@
   const rawSaved = new Map();
   const rawBuffer = new Map();
   const allowDelete = new Map();
-  const seenMenus = new Map();
   const unpatches = [];
   let ActionSheet;
   let ActionSheetRowIconComponent;
@@ -496,32 +495,64 @@
       }
       return false;
     };
+    const dismissProfileRoute = () => {
+      let current = navigation;
+      for (let depth = 0; current && depth < 8; depth++) {
+        let state = null;
+        try { state = typeof current.getState === "function" ? current.getState() : null; } catch (_) {}
+        const routes = state && Array.isArray(state.routes) ? state.routes : [];
+        const active = routes[state && Number.isInteger(state.index) ? state.index : routes.length - 1];
+        const routeName = String(active && active.name || "");
+        if (/user.?profile|profile.?modal/i.test(routeName) && !/you|settings/i.test(routeName)) {
+          try {
+            if (typeof current.goBack === "function" && current.canGoBack()) current.goBack();
+            else if (typeof current.dismiss === "function") current.dismiss();
+            return true;
+          } catch (_) {}
+        }
+        try { current = typeof current.getParent === "function" ? current.getParent() : null; }
+        catch (_) { current = null; }
+      }
+      return false;
+    };
     const selectAfterClose = () => {
       setTimeout(() => {
+        // UserProfile is often presented as a modal above the tab navigator.
+        // Closing only the plugin settings route leaves that profile modal
+        // visible, so close the app modal stack before selecting Messages.
+        try {
+          const modalActions = findByProps("closeAllModals");
+          if (modalActions && typeof modalActions.closeAllModals === "function") modalActions.closeAllModals();
+        } catch (_) {}
         try { FluxDispatcher.dispatch({ type: "USER_PROFILE_MODAL_CLOSE" }); } catch (_) {}
         try { FluxDispatcher.dispatch({ type: "USER_SETTINGS_MODAL_CLOSE" }); } catch (_) {}
-        openMessagesTab();
         setTimeout(() => {
-          try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
-        }, 180);
-        if (!real) return;
-        const actions = findByProps("jumpToMessage");
-        if (!actions || typeof actions.jumpToMessage !== "function") {
-          toast("Could not find Kettu's message navigation action");
-          return;
-        }
-        setTimeout(() => {
-          try {
-            actions.jumpToMessage({ channelId, messageId: real, flash: true, jumpType: "INSTANT" });
-          } catch (_) {
-            try { actions.jumpToMessage(channelId, real, true); }
-            catch (_) { toast("Kettu could not jump to that message"); }
-          }
-        }, 350);
+          dismissProfileRoute();
+          setTimeout(() => {
+            openMessagesTab();
+            setTimeout(() => {
+              try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
+              if (!real) return;
+              const actions = findByProps("jumpToMessage");
+              if (!actions || typeof actions.jumpToMessage !== "function") {
+                toast("Could not find Kettu's message navigation action");
+                return;
+              }
+              setTimeout(() => {
+                try {
+                  actions.jumpToMessage({ channelId, messageId: real, flash: true, jumpType: "INSTANT" });
+                } catch (_) {
+                  try { actions.jumpToMessage(channelId, real, true); }
+                  catch (_) { toast("Kettu could not jump to that message"); }
+                }
+              }, 400);
+          }, 220);
+          }, 160);
+        }, 250);
       }, 250);
     };
-    // The plugin is opened from the profile screen. Unwind the plugin's own
-    // settings routes, then dismiss that profile modal exactly once.
+    // The plugin settings are nested above the profile view. Unwind their
+    // routes first; the modal and profile route are closed afterward.
     const nav = navigation;
     let depth = 0;
     const closeOne = () => {
@@ -649,35 +680,6 @@
     if (!type) return "";
     return type.displayName || type.name || (type.type && (type.type.displayName || type.type.name)) ||
       (type.render && (type.render.displayName || type.render.name)) || "";
-  }
-
-  function menuTreeSummary(root) {
-    const found = [];
-    const seen = new Set();
-    const walk = (node, depth) => {
-      if (!node || typeof node !== "object" || depth > 18 || seen.has(node) || found.length >= 10) return;
-      seen.add(node);
-      if (Array.isArray(node)) {
-        const labels = node.slice(0, 5).map((e) => menuText(e && (e.props || e), 0)).filter(Boolean);
-        if (labels.length) found.push("rows=" + labels.join("/").slice(0, 100));
-        for (const child of node) walk(child, depth + 1);
-        return;
-      }
-      if (node.props) {
-        const name = componentName(node.type) || "element";
-        const props = node.props;
-        const items = Array.isArray(props.items) ? " items[" + props.items.length + "]" : "";
-        found.push(name + "(" + Object.keys(props).slice(0, 8).join(",") + ")" + items);
-        walk(props.items, depth + 1);
-        walk(props.children, depth + 1);
-      } else {
-        const keys = Object.keys(node).slice(0, 8);
-        if (keys.length) found.push("object(" + keys.join(",") + ")");
-        for (const key of keys) walk(node[key], depth + 1);
-      }
-    };
-    try { walk(root, 0); } catch (_) {}
-    return found.join("; ").slice(0, 700);
   }
 
   function isMenuRow(node) {
@@ -830,10 +832,6 @@
       const [component, key, ctx] = args;
       if (!component || typeof component.then !== "function") return;
       const plan = key === "MessageLongPressActionSheet" ? messagePlan(ctx && ctx.message) : scopePlan(key, ctx);
-      if (typeof key === "string" && cfg().devMenus) {
-        seenMenus.set(key, Object.keys(ctx || {}).slice(0, 8).join(",") + (plan && plan.length ? " [button added]" : " [no button]"));
-        trimMap(seenMenus, 30);
-      }
       if (!plan || !plan.length) return;
       pendingSheetPlan = plan;
       activeSheetPlan = plan;
@@ -850,11 +848,6 @@
           React.useEffect(() => () => { un(); }, []);
           try {
             const updatedTree = addButtons(tree, plan, plan.some((item) => /this DM/i.test(item.label)));
-            if (cfg().devMenus && typeof key === "string") {
-              seenMenus.set(key, Object.keys(ctx || {}).slice(0, 8).join(",") +
-                (updatedTree ? " [inserted in rendered menu]" : " [menu rows not recognized] " + menuTreeSummary(tree)));
-              trimMap(seenMenus, 30);
-            }
             if (updatedTree) return updatedTree;
           } catch (_) {}
         });
@@ -1092,11 +1085,6 @@
       const props = { ...originalProps };
       const added = addProfileIgnore({ type: args[0], props }, profileRenderUser);
       if (added) args[1] = props;
-      if (cfg().devMenus) {
-        seenMenus.set("UserProfileOverflowMenu", "user profile ContextMenu" +
-          (added ? " [item inserted]" : " [item shape not recognized] ") + menuTreeSummary({ type: args[0], props }));
-        trimMap(seenMenus, 30);
-      }
     } catch (_) {}
   }
 
@@ -1123,37 +1111,6 @@
       }
     } catch (_) {}
     try { unpatches.push(patcher.before("createElement", React, hookReactCreateElement)); } catch (_) {}
-  }
-
-  const seenComps = new Map();
-  let compOffs = [];
-
-  function startCompScan() {
-    stopCompScan();
-    const rec = (args) => {
-      try {
-        const t = args[0];
-        if (!t || typeof t === "string") return;
-        const name = typeof t === "function"
-          ? (t.displayName || t.name)
-          : (t.displayName || (t.type && (t.type.displayName || t.type.name)) || (t.render && t.render.name));
-        if (!name || !/popover|menu|dropdown|overflow/i.test(name) || seenComps.has(name)) return;
-        seenComps.set(name, args[1] ? Object.keys(args[1]).slice(0, 8).join(",") : "");
-        trimMap(seenComps, 40);
-      } catch (_) {}
-    };
-    try {
-      const rt = findByProps("jsx", "jsxs");
-      if (rt) {
-        compOffs.push(patcher.before("jsx", rt, rec));
-        compOffs.push(patcher.before("jsxs", rt, rec));
-      }
-    } catch (_) {}
-    try { compOffs.push(patcher.before("createElement", React, rec)); } catch (_) {}
-  }
-
-  function stopCompScan() {
-    for (const o of compOffs.splice(0)) { try { o(); } catch (_) {} }
   }
 
   function paint(nodes, color) {
@@ -1257,62 +1214,12 @@
     return light ? { text: "#060607", sub: "#5C5E66" } : { text: "#FFFFFF", sub: "#B5BAC1" };
   }
 
-  const SCAN_MATCH = /menu|popover|dropdown|context|overflow|profile|sheet|action/i;
-  const SCAN_SECONDS = 30;
-  let scanning = false;
-  let scanText = "";
-
-  function recordType(found, type, props) {
-    if (!type || typeof type === "string") return;
-    let name = null;
-    if (typeof type === "function") name = type.displayName || type.name;
-    else if (typeof type === "object") {
-      const inner = type.type || type.render;
-      name = type.displayName || (inner && (inner.displayName || inner.name));
-    }
-    if (!name || !SCAN_MATCH.test(name)) return;
-    let entry = found.get(name);
-    if (!entry) {
-      let keys = "";
-      try { keys = props ? Object.keys(props).slice(0, 12).join(",") : ""; } catch (_) {}
-      entry = { n: 0, keys };
-      found.set(name, entry);
-    }
-    entry.n++;
-  }
-
-  function runScan(done) {
-    if (scanning) return;
-    scanning = true;
-    scanText = "";
-    const found = new Map();
-    const offs = [];
-    const rec = (args) => { try { recordType(found, args[0], args[1]); } catch (_) {} };
-    try {
-      const rt = findByProps("jsx", "jsxs");
-      if (rt) {
-        offs.push(patcher.before("jsx", rt, rec));
-        offs.push(patcher.before("jsxs", rt, rec));
-      }
-    } catch (_) {}
-    try { offs.push(patcher.before("createElement", React, rec)); } catch (_) {}
-    toast("Scanning for " + SCAN_SECONDS + "s: open a profile and its three dots menu");
-    setTimeout(() => {
-      for (const o of offs) { try { o(); } catch (_) {} }
-      scanning = false;
-      scanText = !offs.length
-        ? "Could not hook the renderer."
-        : [...found.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 40)
-            .map(([name, e]) => name + " x" + e.n + " props: " + e.keys).join("\n").slice(0, 3500) || "Nothing matched.";
-      toast("Scan finished, check the plugin settings");
-      try { done(); } catch (_) {}
-    }, SCAN_SECONDS * 1000);
-  }
-
   function Settings() {
     vstorage.useProxy(plugin.storage);
     const [screen, setScreen] = React.useState("main");
     const [limit, setLimit] = React.useState(PAGE);
+    const [pendingIgnoreRemoval, setPendingIgnoreRemoval] = React.useState(null);
+    const [ignoreRemovalStep, setIgnoreRemovalStep] = React.useState(1);
     const [, bump] = React.useState(0);
     let settingsNavigation = null;
     try {
@@ -1326,6 +1233,13 @@
     const h = React.createElement;
 
     const go = (name) => { setLimit(PAGE); setScreen(name); };
+
+    const confirmStopIgnoring = (kind, id, entryName) => {
+      setPendingIgnoreRemoval({ kind, id: String(id), name: String(entryName || id) });
+      setIgnoreRemovalStep(1);
+      setScreen("ignoredConfirm");
+      refreshUI();
+    };
 
     const Text = (props, ...kids) => h(RN.Text, props, ...kids);
     const Section = (title) =>
@@ -1405,12 +1319,40 @@
         rows.push(Section(title));
         for (const id of ids) {
           const entryName = ig[kind][id];
-          rows.push(PressRow("ignored-" + kind + "-" + id, entryName, "Tap to stop ignoring", () => {
-            // Remove directly from the tapped row's captured category and ID.
-            // Avoid a delayed Alert callback that can outlive this rendered list.
-            if (setIgnore(kind, id, entryName, false)) refreshUI();
-          }, "×"));
+          rows.push(PressRow("ignored-" + kind + "-" + id, entryName, "Tap to remove · " + title, () => {
+            confirmStopIgnoring(kind, id, entryName);
+          }, "›"));
         }
+      }
+      return rows;
+    };
+
+    const ignoredConfirmScreen = () => {
+      const target = pendingIgnoreRemoval;
+      if (!target) return [back()];
+      const category = target.kind === "guilds" ? "server" : target.kind === "channels" ? "channel or DM" : "user";
+      const rows = [Btn("cancel-remove", "< Back to ignored", () => {
+        setPendingIgnoreRemoval(null);
+        setScreen("ignored");
+        refreshUI();
+      })];
+      rows.push(h(RN.View, { key: "remove-title", style: { paddingHorizontal: 16, paddingVertical: 14 } },
+        Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, "Confirm removal · " + ignoreRemovalStep + " of 2"),
+        Text({ style: { color: C.sub, fontSize: 14, marginTop: 8 } },
+          ignoreRemovalStep === 1
+            ? "Stop ignoring this " + category + "? The item will stay in the list until you confirm twice."
+            : "Final confirmation: remove “" + target.name + "” from the ignored " + category + " list?")));
+      if (ignoreRemovalStep === 1) {
+        rows.push(Btn("remove-continue", "Continue", () => { setIgnoreRemovalStep(2); refreshUI(); }));
+      } else {
+        rows.push(Btn("remove-final", "Remove ignore", () => {
+          if (setIgnore(target.kind, target.id, target.name, false)) {
+            setPendingIgnoreRemoval(null);
+            setIgnoreRemovalStep(1);
+            setScreen("ignored");
+            refreshUI();
+          }
+        }, RED));
       }
       return rows;
     };
@@ -1418,6 +1360,7 @@
     let content;
     if (screen === "deleted" || screen === "edited") content = loggedScreen(screen);
     else if (screen === "ignored") content = ignoredScreen();
+    else if (screen === "ignoredConfirm") content = ignoredConfirmScreen();
     else {
       const ig = ignored();
       const ignoredCount = Object.keys(ig.guilds).length + Object.keys(ig.channels).length + Object.keys(ig.users).length;
@@ -1444,26 +1387,7 @@
             { text: "Clear", style: "destructive", onPress: () => { clearAll(); refreshUI(); } },
           ]);
         }, RED),
-        Section("Advanced"),
-        Switch("devMenus", "Detect menus", "Lists the menus you open, useful for bug reports. Turn off when done", (v) => {
-          cfg().devMenus = v;
-          if (v) startCompScan(); else stopCompScan();
-          refreshUI();
-        }),
-        Btn("scan", scanning ? "Scanning..." : "Scan menu components (" + SCAN_SECONDS + "s)", () => { runScan(refreshUI); refreshUI(); }),
       ];
-      if (scanText) {
-        content.push(h(RN.View, { key: "scanText", style: { paddingHorizontal: 16, paddingVertical: 8 } },
-          Text({ style: { color: C.sub, fontSize: 11 }, selectable: true }, scanText)));
-      }
-      if (cfg().devMenus) {
-        const menuLines = [...seenMenus.entries()].map(([k, v]) => k + ": " + v);
-        const compLines = [...seenComps.entries()].map(([k, v]) => k + ": " + v);
-        const list = (menuLines.length ? "Sheets:\n" + menuLines.join("\n") : "Open a menu, then come back.") +
-          (compLines.length ? "\n\nPopovers:\n" + compLines.join("\n") : "");
-        content.push(h(RN.View, { key: "menus", style: { paddingHorizontal: 16, paddingVertical: 8 } },
-          Text({ style: { color: C.sub, fontSize: 11 }, selectable: true }, list)));
-      }
     }
 
     content.unshift(h(RN.View, { key: "build", style: { paddingHorizontal: 16, paddingTop: 8 } },
@@ -1474,10 +1398,14 @@
   function onLoad() {
     const s = cfg();
     const defaults = {
-      logDeleted: true, logEdited: true, persist: false, redName: true, skipOwn: false, skipBots: false,
-      showDeletedTime: false, showEditTime: false, retentionDays: 0, devMenus: false,
+      logDeleted: true, logEdited: true, persist: false, redName: true, skipOwn: true, skipBots: false,
+      showDeletedTime: false, showEditTime: false, retentionDays: 0,
     };
     for (const k of Object.keys(defaults)) if (s[k] === undefined) s[k] = defaults[k];
+    if (s.ignoreOwnDefaultMigration !== 1) {
+      s.skipOwn = true;
+      s.ignoreOwnDefaultMigration = 1;
+    }
     if (!s.ignored) s.ignored = { channels: {}, guilds: {}, users: {} };
     renderErrors = 0;
 
@@ -1502,7 +1430,6 @@
     } catch (_) {}
     hookProfileOverflow();
     hookProfileMenuFactories();
-    if (s.devMenus) startCompScan();
     try {
       appStateSub = RN.AppState.addEventListener("change", (state) => {
         if (state === "active") { if (purge()) markDirty(); }
@@ -1514,8 +1441,6 @@
   function onUnload() {
     flush();
     for (const u of unpatches.splice(0)) { try { u(); } catch (_) {} }
-    stopCompScan();
-    seenComps.clear();
     if (renderUnpatch) { try { renderUnpatch(); } catch (_) {} renderUnpatch = null; }
     if (appStateSub && appStateSub.remove) { try { appStateSub.remove(); } catch (_) {} }
     appStateSub = null;
@@ -1524,7 +1449,6 @@
     rawSaved.clear();
     rawBuffer.clear();
     allowDelete.clear();
-    seenMenus.clear();
   }
 
   return { onLoad, onUnload, settings: Settings };

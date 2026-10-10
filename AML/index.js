@@ -1921,6 +1921,7 @@
     try {
       gplBridge = {
         active: true,
+        getKnownMessage: (channelId, id) => getKnownMessage(channelId, id),
         shouldRetainDelete: (message, channelId, guildId) => !!cfg().logDeleted && !shouldSkip(message, channelId, guildId),
         ownsDeletedMessage: (id) => deleted.has(String(id)),
         ownsEditedMessage: (id) => edits.has(String(id)),

@@ -56,6 +56,7 @@
 
   const cfg = () => plugin.storage;
   const GPL_BRIDGE_KEY = "__advanced_message_logger_gpl_bridge_v1__";
+  const GPL_ALERT_BRIDGE_KEY = "__ghost_ping_logger_aml_bridge_v1__";
   let gplBridge = null;
   const toast = (t) => { try { ui.toasts.showToast(t); } catch (_) {} };
   const trimMap = (m, max) => { while (m.size > max) m.delete(m.keys().next().value); };
@@ -373,7 +374,7 @@
     typeof m.content === "string" && !!m.author && typeof m.author === "object";
 
   // Collects every full message object from an event payload (single message, lists, nested
-  // lists such as search results, or pin entries) into the expanded cache.
+  // lists such as search results, or pin entries) into the all-channels cache.
   function harvest(value, depth) {
     if (!value || typeof value !== "object" || depth > 3) return;
     if (Array.isArray(value)) { for (const v of value) harvest(v, depth + 1); return; }
@@ -430,9 +431,17 @@
       markDirty();
     }
     refreshToggle(msg, channelId, id, guildId);
-    if (cfg().notifyDeleted && isDM(getChannel(channelId))) {
+    if (cfg().notifyDeleted && isDM(getChannel(channelId)) && !gplWillAlert(msg, channelId, guildId, id)) {
       toast("Deleted message from " + info.an + ": " + clip(info.t, 80));
     }
+  }
+
+  // True when Ghost Ping Logger will already alert about this deleted message, so we skip our own DM toast.
+  function gplWillAlert(msg, channelId, guildId, id) {
+    try {
+      const bridge = globalThis[GPL_ALERT_BRIDGE_KEY];
+      return !!(bridge && bridge.active && typeof bridge.willShowDeleteAlert === "function" && bridge.willShowDeleteAlert(msg, channelId, guildId, id));
+    } catch (_) { return false; }
   }
 
   const blocked = (original) => ({ type: "MESSAGE_LOGGER_BLOCKED", original });
@@ -1356,7 +1365,7 @@
     };
     return React.createElement(RN.View, { style: { width: "100%", maxWidth: 440, alignSelf: "center", padding: 20, borderRadius: 14, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
       React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Maximum cached messages"),
-      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "Expanded Cache only. Higher values use more memory. Keeps messages Discord sends or loads while Kettu runs; no history is fetched."),
+      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "All Channels mode only. Higher values use more memory. Keeps messages Discord sends or loads while Kettu runs; no history is fetched."),
       React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, keyboardType: "number-pad", accessibilityLabel: "Maximum cached messages", style: { minHeight: 48, paddingHorizontal: 12, borderRadius: 8, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
       error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
       React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", marginTop: 18 } },
@@ -1552,9 +1561,9 @@
     };
 
     const retentionLabel = () => (cfg().retentionDays === 7 ? "7 days" : cfg().retentionDays === 30 ? "30 days" : "Forever");
-    const captureModeLabel = () => cfg().captureMode === "expanded" ? "Expanded Cache" : "Loaded Only";
+    const captureModeLabel = () => cfg().captureMode === "expanded" ? "All Channels" : "Loaded Only";
     const captureModeDescription = () => cfg().captureMode === "expanded"
-      ? "Higher memory use; retain incoming messages from channels you have not opened"
+      ? "Higher memory use; also logs messages from channels you have not opened"
       : "Lowest resource use; check only messages already loaded by Discord";
     const cycleCaptureMode = () => {
       cfg().captureMode = cfg().captureMode === "expanded" ? "loaded" : "expanded";
@@ -1685,7 +1694,7 @@
         Switch("notifyEdited", "Notify about edited messages", "Show a toast for edited messages in DMs only"),
         Section("Message capture"),
         PressRow("capture-mode", "Capture mode", captureModeDescription(), cycleCaptureMode, captureModeLabel()),
-        PressRow("cache-limit", "Maximum cached messages", "Expanded Cache only · held in memory", editRawBufferLimit, String(rawBufferLimit())),
+        PressRow("cache-limit", "Maximum cached messages", "All Channels mode only · held in memory", editRawBufferLimit, String(rawBufferLimit())),
         Section("Display"),
         PressRow("deleted-color", "Deleted message color", "Text and highlight color", () => editColor("deletedMessageColor", "Deleted message color", RED), colorValue("deletedMessageColor", RED)),
         PressRow("edited-color", "Edited message color", "Previous versions and edit highlights", () => editColor("editedMessageColor", "Edited message color", GREY), colorValue("editedMessageColor", GREY)),

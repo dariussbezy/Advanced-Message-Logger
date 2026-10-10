@@ -12,7 +12,7 @@
   const MAX_LOGGED = 2000;
   const MAX_EDITED = 1000;
   const MAX_SAVED_RAW = 1000;
-  const DEFAULT_RAW_BUFFER = 500;
+  const DEFAULT_RAW_BUFFER = 1000;
   const MIN_RAW_BUFFER = 100;
   const MAX_RAW_BUFFER = 20000;
   const MAX_RAW_SIZE = 20000;
@@ -50,6 +50,8 @@
   let pendingSheetPlan = null;
   let activeSheetPlan = null;
   let activeSheetInserted = false;
+  const dmAlertQueue = [];
+  let dmAlertShowing = false;
   const wrappedSheetModules = new WeakSet();
   const profileTypeWrappers = new WeakMap();
   const profileWrappedTypes = new WeakSet();
@@ -432,7 +434,7 @@
     }
     refreshToggle(msg, channelId, id, guildId);
     if (cfg().notifyDeleted && isDM(getChannel(channelId)) && !gplWillAlert(msg, channelId, guildId, id)) {
-      toast("Deleted message from " + info.an + ": " + clip(info.t, 80));
+      showDmMessageAlert({ kind: "deleted", id, c: channelId, g: guildId || null, an: info.an, t: info.t });
     }
   }
 
@@ -442,6 +444,13 @@
       const bridge = globalThis[GPL_ALERT_BRIDGE_KEY];
       return !!(bridge && bridge.active && typeof bridge.willShowDeleteAlert === "function" && bridge.willShowDeleteAlert(msg, channelId, guildId, id));
     } catch (_) { return false; }
+  }
+
+  function gplRemoveEditHistory(id) {
+    try {
+      const bridge = globalThis[GPL_ALERT_BRIDGE_KEY];
+      if (bridge && bridge.active && typeof bridge.removeEditHistory === "function") bridge.removeEditHistory(String(id));
+    } catch (_) {}
   }
 
   const blocked = (original) => ({ type: "MESSAGE_LOGGER_BLOCKED", original });
@@ -501,7 +510,7 @@
     if (en.v.length > MAX_VERSIONS) { en.v.shift(); en.trimmed = true; }
     markDirty();
     if (cfg().notifyEdited && isDM(getChannel(m.channel_id))) {
-      toast("Edited message from " + en.an + ": " + clip(en.cur, 80));
+      showDmMessageAlert({ kind: "edited", id: String(m.id), c: String(m.channel_id), g: guildId || null, an: en.an, t: en.cur });
     }
   }
 
@@ -588,7 +597,8 @@
     const channelId = message.channel_id || message.channelId || currentChannelId();
     const guildId = guildOf(channelId);
     const wasDeleted = deleted.has(id);
-    edits.delete(id);
+    const removedEditHistory = edits.delete(id);
+    if (removedEditHistory) gplRemoveEditHistory(id);
     if (wasDeleted) {
       deleted.delete(id);
       rawSaved.delete(id);
@@ -609,6 +619,17 @@
       if (msg) refreshToggle(msg, channelId, id, guildId);
     }
     markDirty();
+  }
+
+  function removeEditedMessageFromAML(id) {
+    const key = String(id);
+    const entry = edits.get(key);
+    if (!entry) return false;
+    edits.delete(key);
+    markDirty();
+    const msg = getMessage(entry.c, key);
+    if (msg) refreshToggle(msg, entry.c, key, entry.g || guildOf(entry.c));
+    return true;
   }
 
   function jumpTo(channelId, guildId, messageId, navigation) {
@@ -744,10 +765,10 @@
     closeOne();
   }
 
-  function ask(title, message, buttons) {
+  function ask(title, message, buttons, appendCancel) {
     const ios = RN.Platform && RN.Platform.OS === "ios";
     const list = buttons.slice(0, ios ? 6 : 3);
-    if (ios) list.push({ text: "Cancel", style: "cancel" });
+    if (ios && appendCancel !== false) list.push({ text: "Cancel", style: "cancel" });
     try { RN.Alert.alert(title, message, list, { cancelable: true }); } catch (_) {}
   }
 
@@ -759,7 +780,7 @@
       (i === 0 ? "Original" : "Version " + (i + 1)) + " (" + fmtTime(i === 0 ? sent : en.v[i - 1].at) + ")\n" + v.t);
     const current = typeof message.content === "string" ? message.content : en.cur;
     parts.push("Current (" + fmtTime(en.v[en.v.length - 1].at) + ")\n" + current);
-    ask("Edit history", clip(parts.join("\n\n"), 3500), [{ text: "Close" }]);
+    ask("Edit history", clip(parts.join("\n\n"), 3500), [{ text: "Close" }], false);
   }
 
   function messagePlan(message) {
@@ -1351,6 +1372,64 @@
     } catch (_) {}
   }
 
+  function dismissDmMessageAlert(entry, jump) {
+    closeSettingsAlert();
+    dmAlertShowing = false;
+    if (jump && entry && entry.c && entry.id) {
+      setTimeout(() => jumpTo(entry.c, entry.g, entry.id, null), 180);
+    }
+    const nextDelay = jump ? 2400 : 180;
+    setTimeout(showNextDmMessageAlert, nextDelay);
+  }
+
+  function DmMessageAlert(props) {
+    const entry = props.entry || {};
+    const colors = palette();
+    const dark = colors.text === "#FFFFFF";
+    const h = React.createElement;
+    const close = () => dismissDmMessageAlert(entry, false);
+    const jump = () => dismissDmMessageAlert(entry, true);
+    const deletedMessage = entry.kind === "deleted";
+    const title = deletedMessage ? "MESSAGE DELETED" : "MESSAGE EDITED";
+    const verb = deletedMessage ? "deleted a message in your DM" : "edited a message in your DM";
+    const btn = (label, onPress, primary) => h(RN.Pressable, {
+      key: label, onPress, accessibilityRole: "button",
+      style: ({ pressed }) => ({ flex: 1, minHeight: 48, borderRadius: 14, alignItems: "center", justifyContent: "center", marginLeft: primary ? 10 : 0, backgroundColor: primary ? (pressed ? "#4752C4" : "#5865F2") : (pressed ? "rgba(128,128,128,0.32)" : "rgba(128,128,128,0.22)") }),
+    }, h(RN.Text, { style: { color: primary ? "#FFFFFF" : colors.text, fontSize: 15, fontWeight: "700" } }, label));
+    return h(RN.View, { style: { width: "92%", maxWidth: 440, alignSelf: "center", padding: 22, borderRadius: 22, backgroundColor: dark ? "#2B2D31" : "#FFFFFF" } },
+      h(RN.View, { style: { flexDirection: "row", alignItems: "center" } },
+        h(RN.View, { style: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(237,66,69,0.16)" } },
+          h(RN.Text, { style: { fontSize: 24 } }, deletedMessage ? "\uD83D\uDDD1\uFE0F" : "\u270F\uFE0F")),
+        h(RN.View, { style: { flex: 1, marginLeft: 14 } },
+          h(RN.Text, { style: { color: RED, fontSize: 12, fontWeight: "700", letterSpacing: 0.8 } }, title),
+          h(RN.Text, { style: { color: colors.text, fontSize: 18, fontWeight: "700", marginTop: 2 }, numberOfLines: 1 }, String(entry.an || "Unknown")))),
+      h(RN.Text, { style: { color: colors.sub, fontSize: 14, marginTop: 14 } }, verb),
+      h(RN.View, { style: { marginTop: 10, padding: 14, borderRadius: 14, borderLeftWidth: 4, borderLeftColor: RED, backgroundColor: "rgba(237,66,69,0.10)" } },
+        h(RN.Text, { style: { color: colors.text, fontSize: 15, lineHeight: 21 } }, entry.t || "(no message text)")),
+      h(RN.View, { style: { flexDirection: "row", marginTop: 20 } },
+        btn("Dismiss", close, false), btn("Jump to message", jump, true)));
+  }
+
+  function showDmMessageAlert(entry) {
+    dmAlertQueue.push(entry);
+    if (dmAlertQueue.length > 20) dmAlertQueue.shift();
+    showNextDmMessageAlert();
+  }
+
+  function showNextDmMessageAlert() {
+    if (dmAlertShowing || !dmAlertQueue.length) return;
+    const entry = dmAlertQueue.shift();
+    try {
+      if (ui.alerts && typeof ui.alerts.showCustomAlert === "function") {
+        dmAlertShowing = true;
+        ui.alerts.showCustomAlert(DmMessageAlert, { entry });
+        return;
+      }
+    } catch (_) { dmAlertShowing = false; }
+    toast((entry.kind === "deleted" ? "Deleted" : "Edited") + " DM message from " + entry.an + ": " + clip(entry.t, 80));
+    setTimeout(showNextDmMessageAlert, 180);
+  }
+
   function MessageCacheLimitModal(props) {
     const [value, setValue] = React.useState(String(props.initialValue || DEFAULT_RAW_BUFFER));
     const [error, setError] = React.useState("");
@@ -1370,7 +1449,7 @@
       closeSettingsAlert();
       if (typeof props.onSave === "function") props.onSave(count);
     };
-    return React.createElement(RN.View, { style: { width: "100%", maxWidth: 440, alignSelf: "center", padding: 22, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+    return React.createElement(RN.View, { style: { width: "92%", maxWidth: 440, alignSelf: "center", padding: 18, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
       React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Maximum cached messages"),
       React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "All Channels mode only. Higher values use more memory. Keeps messages Discord sends or loads while Kettu runs; no history is fetched."),
       React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, keyboardType: "number-pad", accessibilityLabel: "Maximum cached messages", style: { minHeight: 48, paddingHorizontal: 14, borderRadius: 14, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
@@ -1399,7 +1478,7 @@
       ["Red", "#ED4245"], ["Orange", "#F07B3E"], ["Gold", "#F1C40F"], ["Green", "#43B581"], ["Teal", "#1ABC9C"],
       ["Blue", "#3498DB"], ["Indigo", "#5865F2"], ["Purple", "#9B59B6"], ["Pink", "#EB459E"], ["Gray", "#80848E"],
     ];
-    return React.createElement(RN.ScrollView, { style: { width: "100%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 22, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+    return React.createElement(RN.ScrollView, { style: { width: "92%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 18, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
       React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, props.title || "Message color"),
       React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 12 } }, "Choose a preset or enter a HEX color."),
       React.createElement(RN.View, { style: { flexDirection: "row", flexWrap: "wrap", marginBottom: 12 } }, presets.map(([label, hex]) => React.createElement(RN.Pressable, {
@@ -1453,7 +1532,7 @@
       if (typeof props.onSave === "function") props.onSave({ ...current(), name: name.trim() });
     };
     const saved = Array.isArray(props.savedFilters) ? props.savedFilters : [];
-    return React.createElement(RN.ScrollView, { style: { width: "100%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 22, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+    return React.createElement(RN.ScrollView, { style: { width: "92%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 18, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
       React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Search logs"),
       React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 13 } }, "Search matches user, channel, and message text."),
       field("User, channel, or message", query, setQuery),
@@ -1482,6 +1561,16 @@
   function Settings() {
     vstorage.useProxy(plugin.storage);
     const [screen, setScreen] = React.useState("main");
+    const AnimatedScrollView = RN.Animated && RN.Animated.ScrollView;
+    const screenFade = React.useRef(AnimatedScrollView ? new RN.Animated.Value(1) : null).current;
+    React.useEffect(() => {
+      if (!screenFade || !RN.Animated || typeof RN.Animated.timing !== "function") return;
+      screenFade.setValue(0);
+      const animation = RN.Animated.timing(screenFade, { toValue: 1, duration: 110, useNativeDriver: true });
+      animation.start();
+      return () => animation.stop();
+    }, [screen]);
+    const screenStyle = screenFade ? { opacity: screenFade, transform: [{ translateY: screenFade.interpolate({ inputRange: [0, 1], outputRange: [3, 0] }) }] } : undefined;
     const [limit, setLimit] = React.useState(PAGE);
     const [logFilter, setLogFilter] = React.useState({ query: "", from: "", to: "" });
     const [, bump] = React.useState(0);
@@ -1641,7 +1730,7 @@
     const retentionLabel = () => (cfg().retentionDays === 7 ? "7 days" : cfg().retentionDays === 30 ? "30 days" : "Forever");
     const captureModeLabel = () => cfg().captureMode === "expanded" ? "All Channels" : "Loaded Only";
     const captureModeDescription = () => cfg().captureMode === "expanded"
-      ? "Higher memory use; also logs messages from channels you have not opened"
+      ? "Higher memory use; captures messages Discord delivers from channels you have not opened. Does not fetch channel history."
       : "Lowest resource use; check only messages already loaded by Discord";
     const cycleCaptureMode = () => {
       cfg().captureMode = cfg().captureMode === "expanded" ? "loaded" : "expanded";
@@ -1766,8 +1855,8 @@
         Switch("redName", "Color deleted usernames", "Apply a separate color to the sender's name", (v) => { cfg().redName = v; refreshStyledMessages(); refreshUI(); }),
         Switch("logEdited", "Keep edited messages", "Previous versions appear above the new text in the selected color"),
         Switch("persist", "Save across restarts", "Store logged messages on this device", (v) => { setPersist(v); refreshUI(); }),
-        Switch("notifyDeleted", "Notify about deleted messages", "Show a toast for deleted messages in DMs only"),
-        Switch("notifyEdited", "Notify about edited messages", "Show a toast for edited messages in DMs only"),
+        Switch("notifyDeleted", "Notify about deleted messages", "Show a Jump to message alert for deleted DMs only"),
+        Switch("notifyEdited", "Notify about edited messages", "Show a Jump to message alert for edited DMs only"),
         Section("Message capture"),
         PressRow("capture-mode", "Capture mode", captureModeDescription(), cycleCaptureMode, captureModeLabel()),
         PressRow("cache-limit", "Maximum cached messages", "All Channels mode only · held in memory", editRawBufferLimit, String(rawBufferLimit())),
@@ -1796,10 +1885,12 @@
     }
 
     content.unshift(screen === "main" ? Header("Advanced Message Logger", "Deleted and edited messages stay visible") : buildTag());
-    return h(RN.ScrollView, { key: screen, contentContainerStyle: { paddingBottom: 40 } }, ...compose(content));
+    return h(AnimatedScrollView || RN.ScrollView, { key: screen, style: screenStyle, contentContainerStyle: { paddingBottom: 40 } }, ...compose(content));
   }
 
   function onLoad() {
+    dmAlertQueue.length = 0;
+    dmAlertShowing = false;
     const s = cfg();
     const defaults = {
       logDeleted: true, logEdited: true, persist: false, redName: true, skipOwn: true, skipBots: true,
@@ -1808,6 +1899,10 @@
       notifyDeleted: false, notifyEdited: false,
     };
     for (const k of Object.keys(defaults)) if (s[k] === undefined) s[k] = defaults[k];
+    if (s.maxCachedMessagesDefaultMigration !== 1) {
+      if (Number(s.maxCachedMessages) === 500) s.maxCachedMessages = DEFAULT_RAW_BUFFER;
+      s.maxCachedMessagesDefaultMigration = 1;
+    }
     if (s.captureMode !== "loaded" && s.captureMode !== "expanded") s.captureMode = "expanded";
     if (s.ignoreOwnDefaultMigration !== 1) {
       s.skipOwn = true;
@@ -1829,6 +1924,7 @@
         shouldRetainDelete: (message, channelId, guildId) => !!cfg().logDeleted && !shouldSkip(message, channelId, guildId),
         ownsDeletedMessage: (id) => deleted.has(String(id)),
         ownsEditedMessage: (id) => edits.has(String(id)),
+        removeEditedMessage: removeEditedMessageFromAML,
         notifiesDMDelete: (channelId) => !!cfg().logDeleted && !!cfg().notifyDeleted && isDM(getChannel(channelId)),
         notifiesDMEdit: (channelId) => !!cfg().logEdited && !!cfg().notifyEdited && isDM(getChannel(channelId)),
       };
@@ -1857,6 +1953,8 @@
   }
 
   function onUnload() {
+    dmAlertQueue.length = 0;
+    dmAlertShowing = false;
     flush();
     for (const u of unpatches.splice(0)) { try { u(); } catch (_) {} }
     if (renderUnpatch) { try { renderUnpatch(); } catch (_) {} renderUnpatch = null; }

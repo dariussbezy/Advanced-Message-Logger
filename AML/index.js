@@ -16,7 +16,7 @@
   const MIN_RAW_BUFFER = 100;
   const MAX_RAW_BUFFER = 20000;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = "v3.1.0";
+  const BUILD = "v4.0.0";
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;

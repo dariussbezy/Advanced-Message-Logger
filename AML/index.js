@@ -12,16 +12,15 @@
   const MAX_LOGGED = 2000;
   const MAX_EDITED = 1000;
   const MAX_SAVED_RAW = 1000;
-  const DEFAULT_RAW_BUFFER = 1000;
+  const DEFAULT_RAW_BUFFER = 500;
   const MIN_RAW_BUFFER = 100;
-  const MAX_RAW_BUFFER = 5000;
+  const MAX_RAW_BUFFER = 20000;
   const MAX_RAW_SIZE = 20000;
-  const BUILD = "v3.0.0";
+  const BUILD = "v3.1.0";
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
   const DISCORD_EPOCH = 1420070400000;
-  const FLAG = 0x20000000;
   const FLAG_TOGGLE = 0x10000000;
   const RED = "#ED4245";
   const GREY = "#80848E";
@@ -370,22 +369,24 @@
     trimMap(rawBuffer, rawBufferLimit());
   }
 
+  const looksLikeMessage = (m) => !!m && typeof m === "object" && typeof m.id === "string" &&
+    typeof m.content === "string" && !!m.author && typeof m.author === "object";
+
+  // Collects every full message object from an event payload (single message, lists, nested
+  // lists such as search results, or pin entries) into the expanded cache.
+  function harvest(value, depth) {
+    if (!value || typeof value !== "object" || depth > 3) return;
+    if (Array.isArray(value)) { for (const v of value) harvest(v, depth + 1); return; }
+    if (looksLikeMessage(value)) { remember(value); return; }
+    harvest(value.message, depth + 1);
+    harvest(value.messages, depth + 1);
+    harvest(value.pins, depth + 1);
+  }
+
   function rawBufferLimit() {
     const value = Number(cfg().maxCachedMessages);
     if (!Number.isFinite(value)) return DEFAULT_RAW_BUFFER;
     return Math.max(MIN_RAW_BUFFER, Math.min(MAX_RAW_BUFFER, Math.round(value)));
-  }
-
-  function refresh(msg, channelId, id, guildId) {
-    setTimeout(() => {
-      try {
-        FluxDispatcher.dispatch({
-          type: "MESSAGE_UPDATE",
-          guildId,
-          message: { id, channel_id: channelId, guild_id: guildId, flags: (msg.flags | 0) | FLAG },
-        });
-      } catch (_) {}
-    }, 0);
   }
 
   function refreshToggle(msg, channelId, id, guildId) {
@@ -543,7 +544,8 @@
           onEdit(e);
           if (e.message && e.message.id) {
             const old = rawBuffer.get(e.message.id);
-            if (old) rawBuffer.set(e.message.id, { ...old, ...e.message });
+            if (old) remember({ ...old, ...e.message });
+            else if (looksLikeMessage(e.message)) remember(e.message);
           }
           break;
         }
@@ -558,10 +560,16 @@
             const r = inject(e);
             if (r) args[0] = r;
           }
-          const list = args[0].messages;
-          if (Array.isArray(list)) for (const m of list) remember(m);
+          harvest(args[0].messages, 0);
           break;
         }
+        case "LOCAL_MESSAGE_CREATE":
+        case "LOAD_MESSAGES_SUCCESS_CACHED":
+        case "LOAD_RECENT_MENTIONS_SUCCESS":
+        case "LOAD_PINNED_MESSAGES_SUCCESS":
+        case "SEARCH_FINISH":
+          harvest(e, 0);
+          break;
       }
     } catch (_) {}
   }
@@ -755,44 +763,6 @@
     return plan.length ? plan : null;
   }
 
-  function inspectCtx(ctx) {
-    let channel = null;
-    let guild = null;
-    let user = null;
-    const asChannel = (v) => {
-      if (channel || !v) return;
-      const id = typeof v === "string" ? v : typeof v === "object" ? v.id : null;
-      const c = id ? getChannel(id) : null;
-      if (c) channel = c;
-    };
-    asChannel(ctx.channel);
-    asChannel(ctx.channelId);
-    asChannel(ctx.channel_id);
-    if (!channel) {
-      for (const k of Object.keys(ctx)) {
-        const v = ctx[k];
-        if (v && typeof v === "object" && v.id && v.type !== undefined) asChannel(v);
-        if (channel) break;
-      }
-    }
-    try {
-      const gid = (ctx.guild && ctx.guild.id) || ctx.guildId || ctx.guild_id;
-      if (gid) guild = GuildStore.getGuild(gid) || null;
-      user = ctx.user || ctx.recipient || (ctx.member && ctx.member.user) || (ctx.userId && UserStore.getUser(ctx.userId)) || null;
-    } catch (_) {}
-    return { channel, guild, user };
-  }
-
-  function ignoreItem(kind, id, name, word) {
-    const on = !!ignored()[kind][id];
-    return {
-      key: "bml-ignore-" + kind,
-      label: (on ? "Stop ignoring this " : "Ignore this ") + word + " in logger",
-      icon: kind === "users" ? "user" : kind === "guilds" ? "server" : "dm",
-      press: () => flipIgnore(kind, id, name),
-    };
-  }
-
   function scopePlan(key, ctx) {
     if (typeof key !== "string" || !ctx || typeof ctx !== "object" || SKIP_MENU.test(key)) return null;
     const item = (kind, id, name, word) => ({
@@ -920,33 +890,6 @@
     };
     const result = rewrite(tree, 0, new Set());
     return inserted ? result : null;
-  }
-
-  function pickIcon(kind) {
-    try {
-      const names = Object.keys(ui.assets.all || {});
-      const tests = kind === "trash"
-        ? [/^(ic_)?trash.*(filled|variant|circle|check|x|sweep)/i, /delete.*(forever|sweep|outline|history)/i, /^(ic_)?(clear_all|eraser|broom|sweep)/i, /trash|delete/i]
-        : kind === "history"
-          ? [/history/i, /clock/i, /^(ic_)?(time|recent)/i]
-          : [/eye.*(off|slash|closed)/i, /(hide|invisible)/i, /^(ic_)?eye/i];
-      for (const t of tests) {
-        const hit = names.find((n) => t.test(n) && n !== "ic_trash_24px" && n !== "trash");
-        if (hit) return ui.assets.getAssetIDByName(hit);
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  function withIcon(tpl, id) {
-    const p = tpl && (tpl.props || tpl);
-    const cur = p && (p.icon !== undefined ? p.icon : p.iconSource);
-    if (!id || cur === undefined) return undefined;
-    if (typeof cur === "number") return id;
-    if (cur && typeof cur === "object" && cur.props && cur.props.source !== undefined) {
-      return React.cloneElement(cur, { source: id });
-    }
-    return undefined;
   }
 
   function LoggerPersonGlyph(props) {
@@ -1413,7 +1356,7 @@
     };
     return React.createElement(RN.View, { style: { width: "100%", maxWidth: 440, alignSelf: "center", padding: 20, borderRadius: 14, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
       React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Maximum cached messages"),
-      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "Expanded Cache only. Higher values use more memory. Incoming messages only; no history is fetched."),
+      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "Expanded Cache only. Higher values use more memory. Keeps messages Discord sends or loads while Kettu runs; no history is fetched."),
       React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, keyboardType: "number-pad", accessibilityLabel: "Maximum cached messages", style: { minHeight: 48, paddingHorizontal: 12, borderRadius: 8, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
       error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
       React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", marginTop: 18 } },

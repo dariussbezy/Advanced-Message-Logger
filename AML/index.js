@@ -1243,6 +1243,9 @@
     return out;
   }
 
+  const isOurs = (n) => !!n && typeof n === "object" && n.__gl === 1;
+  const ours = (nodes) => { for (const n of nodes) { try { if (n && typeof n === "object") n.__gl = 1; } catch (_) {} } return nodes; };
+
   function decorate(row, input) {
     if (!row || !row.message) return;
     const rowType = input && input.rowType !== undefined ? input.rowType : row.rowType;
@@ -1253,6 +1256,7 @@
     const versions = en && en.v && en.v.length ? en.v : null;
     if (!info && !versions) {
       if (m.__glOut && m.content === m.__glOut) m.content = m.__glBase;
+      else if (Array.isArray(m.content) && m.content.some(isOurs)) m.content = m.content.filter((n) => !isOurs(n));
       if (m.__glNameBase) {
         m.colorString = m.__glNameBase.colorString;
         m.usernameColor = m.__glNameBase.usernameColor;
@@ -1278,7 +1282,8 @@
     }
     if (info && pc) row.backgroundHighlight = { backgroundColor: pc(withAlpha(deletedColor, "26")), gutterColor: deletedTextColor };
 
-    const base = (m.__glOut && m.content === m.__glOut) ? m.__glBase : m.content;
+    let base = (m.__glOut && m.content === m.__glOut) ? m.__glBase : m.content;
+    if (Array.isArray(base) && base.some(isOurs)) base = base.filter((n) => !isOurs(n));
     if (Array.isArray(base)) {
       let out = info ? paint(base, deletedTextColor) : base;
       if (versions) {
@@ -1287,14 +1292,14 @@
         for (let i = start; i < versions.length; i++) {
           let text = versions[i].t;
           if (cfg().showEditTime && i > 0) text += "  · edited " + fmtTime(versions[i - 1].at);
-          head = head.concat(paint([{ type: "text", content: text + "\n" }], edited));
+          head = head.concat(ours(paint([{ type: "text", content: text + "\n" }], edited)));
         }
         out = head.concat(out);
       }
       const labels = [];
       if (info && cfg().showDeletedTime) labels.push("deleted " + fmtTime(info.at));
       if (versions && cfg().showEditTime) labels.push("edited " + fmtTime(versions[versions.length - 1].at));
-      if (labels.length) out = out.concat(paint([{ type: "text", content: "  " + labels.join(" · ") }], edited));
+      if (labels.length) out = out.concat(ours(paint([{ type: "text", content: "  " + labels.join(" · ") }], edited)));
       m.__glBase = base;
       m.__glOut = out;
       m.content = out;
@@ -1334,7 +1339,9 @@
       ThemeStore = ThemeStore || findByStoreName("ThemeStore");
       light = !!ThemeStore && ThemeStore.theme === "light";
     } catch (_) {}
-    return light ? { text: "#060607", sub: "#5C5E66" } : { text: "#FFFFFF", sub: "#B5BAC1" };
+    return light
+      ? { text: "#060607", sub: "#5C5E66", acc: "#4752C4", blurple: "#5865F2", card2: "rgba(0,0,0,0.045)", chip: "rgba(0,0,0,0.07)", press: "rgba(0,0,0,0.06)", divider: "rgba(0,0,0,0.09)", off: "#B5BAC1" }
+      : { text: "#FFFFFF", sub: "#B5BAC1", acc: "#8EA1FF", blurple: "#5865F2", card2: "rgba(255,255,255,0.06)", chip: "rgba(255,255,255,0.10)", press: "rgba(255,255,255,0.07)", divider: "rgba(255,255,255,0.09)", off: "#4E5058" };
   }
 
   function closeSettingsAlert() {
@@ -1352,7 +1359,7 @@
       key: label,
       onPress,
       accessibilityRole: "button",
-      style: { minHeight: 44, paddingHorizontal: 16, borderRadius: 8, marginLeft: primary ? 10 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? "#5865F2" : "rgba(128,128,128,0.22)" },
+      style: { minHeight: 46, paddingHorizontal: 18, borderRadius: 14, marginLeft: primary ? 10 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? "#5865F2" : "rgba(128,128,128,0.22)" },
     }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" } }, label));
     const save = () => {
       const count = Number(String(value).trim());
@@ -1363,10 +1370,10 @@
       closeSettingsAlert();
       if (typeof props.onSave === "function") props.onSave(count);
     };
-    return React.createElement(RN.View, { style: { width: "100%", maxWidth: 440, alignSelf: "center", padding: 20, borderRadius: 14, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+    return React.createElement(RN.View, { style: { width: "100%", maxWidth: 440, alignSelf: "center", padding: 22, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
       React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Maximum cached messages"),
       React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "All Channels mode only. Higher values use more memory. Keeps messages Discord sends or loads while Kettu runs; no history is fetched."),
-      React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, keyboardType: "number-pad", accessibilityLabel: "Maximum cached messages", style: { minHeight: 48, paddingHorizontal: 12, borderRadius: 8, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
+      React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, keyboardType: "number-pad", accessibilityLabel: "Maximum cached messages", style: { minHeight: 48, paddingHorizontal: 14, borderRadius: 14, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
       error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
       React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", marginTop: 18 } },
         action("Cancel", closeSettingsAlert, false), action("Save", save, true)));
@@ -1380,7 +1387,7 @@
       key: label,
       onPress,
       accessibilityRole: "button",
-      style: { minHeight: 44, paddingHorizontal: 16, borderRadius: 8, marginLeft: primary ? 10 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? "#5865F2" : "rgba(128,128,128,0.22)" },
+      style: { minHeight: 46, paddingHorizontal: 18, borderRadius: 14, marginLeft: primary ? 10 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? "#5865F2" : "rgba(128,128,128,0.22)" },
     }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" } }, label));
     const save = () => {
       const hex = String(value).trim().toUpperCase();
@@ -1392,7 +1399,7 @@
       ["Red", "#ED4245"], ["Orange", "#F07B3E"], ["Gold", "#F1C40F"], ["Green", "#43B581"], ["Teal", "#1ABC9C"],
       ["Blue", "#3498DB"], ["Indigo", "#5865F2"], ["Purple", "#9B59B6"], ["Pink", "#EB459E"], ["Gray", "#80848E"],
     ];
-    return React.createElement(RN.ScrollView, { style: { width: "100%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 20, borderRadius: 14, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+    return React.createElement(RN.ScrollView, { style: { width: "100%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 22, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
       React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, props.title || "Message color"),
       React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 12 } }, "Choose a preset or enter a HEX color."),
       React.createElement(RN.View, { style: { flexDirection: "row", flexWrap: "wrap", marginBottom: 12 } }, presets.map(([label, hex]) => React.createElement(RN.Pressable, {
@@ -1401,7 +1408,7 @@
       }, React.createElement(RN.View, { style: { width: 34, height: 34, borderRadius: 17, backgroundColor: hex, borderWidth: value.toUpperCase() === hex ? 3 : 1, borderColor: colors.text } }),
       React.createElement(RN.Text, { style: { color: colors.text, fontSize: 11, marginTop: 3 } }, label)))),
       React.createElement(RN.View, { style: { width: 44, height: 24, marginBottom: 12, borderRadius: 6, backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(value) ? value : "transparent", borderWidth: 1, borderColor: colors.sub } }),
-      React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, autoCapitalize: "characters", autoCorrect: false, accessibilityLabel: "HEX color", placeholder: "#3366FF", style: { minHeight: 48, paddingHorizontal: 12, borderRadius: 8, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
+      React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, autoCapitalize: "characters", autoCorrect: false, accessibilityLabel: "HEX color", placeholder: "#3366FF", style: { minHeight: 48, paddingHorizontal: 14, borderRadius: 14, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
       error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
       React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", flexWrap: "wrap", marginTop: 18 } },
         action("Default", () => { closeSettingsAlert(); if (typeof props.onSave === "function") props.onSave(props.defaultValue); }, false),
@@ -1427,12 +1434,12 @@
     };
     const action = (label, onPress, primary) => React.createElement(RN.Pressable, {
       key: label, onPress, accessibilityRole: "button",
-      style: { minHeight: 42, paddingHorizontal: 13, borderRadius: 8, marginLeft: primary ? 8 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? "#5865F2" : "rgba(128,128,128,0.22)" },
+      style: { minHeight: 44, paddingHorizontal: 14, borderRadius: 14, marginLeft: primary ? 8 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? "#5865F2" : "rgba(128,128,128,0.22)" },
     }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 14, fontWeight: "600" } }, label));
     const field = (label, value, onChangeText, keyboardType) => React.createElement(RN.TextInput, {
       value, onChangeText, placeholder: label, keyboardType: keyboardType || "default", autoCapitalize: "none", autoCorrect: false,
       accessibilityLabel: label,
-      style: { minHeight: 44, paddingHorizontal: 10, marginTop: 8, borderRadius: 8, color: colors.text, backgroundColor: "rgba(128,128,128,0.16)" },
+      style: { minHeight: 46, paddingHorizontal: 14, marginTop: 8, borderRadius: 14, color: colors.text, backgroundColor: "rgba(128,128,128,0.16)" },
     });
     const apply = (filter) => {
       if (!filter && !validate()) return;
@@ -1446,7 +1453,7 @@
       if (typeof props.onSave === "function") props.onSave({ ...current(), name: name.trim() });
     };
     const saved = Array.isArray(props.savedFilters) ? props.savedFilters : [];
-    return React.createElement(RN.ScrollView, { style: { width: "100%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 20, borderRadius: 14, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+    return React.createElement(RN.ScrollView, { style: { width: "100%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 22, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
       React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Search logs"),
       React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 13 } }, "Search matches user, channel, and message text."),
       field("User, channel, or message", query, setQuery),
@@ -1485,7 +1492,6 @@
       if (typeof useNavigation === "function") settingsNavigation = useNavigation();
     } catch (_) {}
     const refreshUI = () => bump((x) => x + 1);
-    const F = ui.components && ui.components.Forms;
     const C = palette();
     const h = React.createElement;
 
@@ -1505,32 +1511,104 @@
       ]);
     };
 
+    const rowSet = new WeakSet();
+    const mark = (el) => { rowSet.add(el); return el; };
+    const HEXCOLOR = /^#[0-9A-Fa-f]{6}$/;
     const Text = (props, ...kids) => h(RN.Text, props, ...kids);
-    const Section = (title) =>
-      h(RN.View, { key: "sec-" + title, style: { paddingHorizontal: 16, paddingTop: 18, paddingBottom: 4 } },
-        Text({ style: { color: C.sub, fontSize: 12, fontWeight: "600" } }, title.toUpperCase()));
+    const rowStyle = ({ pressed }) => ({ paddingHorizontal: 16, paddingVertical: 13, minHeight: 56, flexDirection: "row", alignItems: "center", backgroundColor: pressed ? C.press : "transparent" });
+    const rowText = (label, sub) => h(RN.View, { style: { flex: 1 } },
+      Text({ style: { color: C.text, fontSize: 16, fontWeight: "500" }, numberOfLines: 4 }, label),
+      sub ? Text({ style: { color: C.sub, fontSize: 13, lineHeight: 18, marginTop: 2 }, numberOfLines: 4 }, sub) : null);
 
-    const PressRow = (key, label, sub, onPress, right) =>
-      h(RN.Pressable, { key, onPress, style: { paddingHorizontal: 16, paddingVertical: 12, flexDirection: "row", alignItems: "center" } },
-        h(RN.View, { style: { flex: 1 } },
-          Text({ style: { color: C.text, fontSize: 16 } }, label),
-          sub ? Text({ style: { color: C.sub, fontSize: 13, marginTop: 2 } }, sub) : null),
-        right ? Text({ style: { color: C.sub, fontSize: 15 } }, right) : null);
+    const Section = (title) =>
+      h(RN.View, { key: "sec-" + title, style: { paddingHorizontal: 30, paddingTop: 24, paddingBottom: 6 } },
+        Text({ style: { color: C.acc, fontSize: 12, fontWeight: "700", letterSpacing: 0.8 } }, title.toUpperCase()));
+
+    const valueChip = (right, rightColor) => {
+      if (!right) return null;
+      if (right === ">" || right === "\u203A") return Text({ style: { color: C.sub, fontSize: 24, marginLeft: 8 } }, "\u203A");
+      if (right === "Selected") return Text({ style: { color: C.acc, fontSize: 20, fontWeight: "700", marginLeft: 8 } }, "\u2713");
+      if (HEXCOLOR.test(right)) {
+        return h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginLeft: 8 } },
+          h(RN.View, { style: { width: 22, height: 22, borderRadius: 11, backgroundColor: right, borderWidth: 2, borderColor: C.divider } }),
+          Text({ style: { color: C.sub, fontSize: 13, marginLeft: 8 } }, right));
+      }
+      return h(RN.View, { style: { marginLeft: 8, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: C.chip, maxWidth: "50%" } },
+        Text({ style: { color: rightColor || C.text, fontSize: 14, fontWeight: "600" }, numberOfLines: 2 }, right));
+    };
+
+    const PressRow = (key, label, sub, onPress, right, rightColor) => mark(
+      h(RN.Pressable, { key, onPress, accessibilityRole: "button", style: rowStyle },
+        rowText(label, sub), valueChip(right, rightColor)));
+
+    const switchRow = (key, label, sub, value, change) => mark(
+      h(RN.Pressable, { key, onPress: () => change(!value), style: rowStyle },
+        h(RN.View, { style: { flex: 1, paddingRight: 12 } },
+          Text({ style: { color: C.text, fontSize: 16, fontWeight: "500" } }, label),
+          sub ? Text({ style: { color: C.sub, fontSize: 13, lineHeight: 18, marginTop: 2 } }, sub) : null),
+        h(RN.Switch, { value, onValueChange: change, trackColor: { false: C.off, true: C.blurple }, thumbColor: "#FFFFFF", ios_backgroundColor: C.off })));
+
+    const Btn = (key, title, onPress, color) => {
+      if (key === "back") {
+        return h(RN.View, { key, style: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 2, flexDirection: "row" } },
+          h(RN.Pressable, { onPress, accessibilityRole: "button", style: ({ pressed }) => ({ paddingVertical: 9, paddingHorizontal: 16, borderRadius: 20, backgroundColor: pressed ? C.press : C.chip }) },
+            Text({ style: { color: C.text, fontSize: 15, fontWeight: "600" } }, "\u2039  Back")));
+      }
+      const danger = color === RED;
+      return h(RN.View, { key, style: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 } },
+        h(RN.Pressable, {
+          onPress, accessibilityRole: "button",
+          style: ({ pressed }) => ({ minHeight: 48, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: danger ? (pressed ? "rgba(237,66,69,0.30)" : "rgba(237,66,69,0.16)") : (pressed ? C.press : C.chip) }),
+        }, Text({ style: { color: danger ? RED : C.text, fontSize: 15, fontWeight: "700" } }, title)));
+    };
+
+    const Empty = (key, text) =>
+      h(RN.View, { key, style: { marginHorizontal: 16, marginTop: 12, padding: 24, borderRadius: 16, backgroundColor: C.card2, alignItems: "center" } },
+        Text({ style: { color: C.sub, fontSize: 14, lineHeight: 20, textAlign: "center" } }, text));
+
+    const Title = (key, text) =>
+      h(RN.View, { key, style: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 4 } },
+        Text({ style: { color: C.text, fontSize: 24, fontWeight: "700" } }, text));
+
+    const Header = (title, subtitle) =>
+      h(RN.View, { key: "build", style: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 2 } },
+        Text({ style: { color: C.text, fontSize: 28, fontWeight: "800" } }, title),
+        h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginTop: 8, flexWrap: "wrap" } },
+          h(RN.View, { style: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, backgroundColor: C.chip, marginRight: 10 } },
+            Text({ style: { color: C.sub, fontSize: 11, fontWeight: "700" } }, "Build " + BUILD)),
+          Text({ style: { color: C.sub, fontSize: 13, flexShrink: 1 } }, subtitle)));
+
+    const buildTag = () =>
+      h(RN.View, { key: "build", style: { paddingHorizontal: 20, paddingTop: 8 } },
+        Text({ style: { color: C.sub, fontSize: 11 } }, "Build " + BUILD));
+
+    // Rows that sit next to each other are grouped into one rounded card with dividers.
+    const compose = (list) => {
+      const out = [];
+      let run = [];
+      const flush = () => {
+        if (!run.length) return;
+        const kids = [];
+        run.forEach((r, i) => {
+          if (i) kids.push(h(RN.View, { key: "div-" + r.key, style: { height: 1, backgroundColor: C.divider, marginLeft: 16 } }));
+          kids.push(r);
+        });
+        out.push(h(RN.View, { key: "card-" + out.length, style: { marginHorizontal: 16, marginTop: 4, borderRadius: 16, backgroundColor: C.card2, overflow: "hidden" } }, ...kids));
+        run = [];
+      };
+      for (const el of list) {
+        if (el && rowSet.has(el)) run.push(el);
+        else { flush(); if (el) out.push(el); }
+      }
+      flush();
+      return out;
+    };
 
     const Switch = (key, label, sub, onChange) => {
       const value = !!cfg()[key];
       const change = onChange || ((v) => { cfg()[key] = v; refreshUI(); });
-      return F && F.FormSwitchRow
-        ? h(F.FormSwitchRow, { key, label, subLabel: sub, value, onValueChange: change })
-        : h(RN.View, { key, style: { flexDirection: "row", alignItems: "center", padding: 16 } },
-            h(RN.View, { style: { flex: 1 } },
-              Text({ style: { color: C.text, fontSize: 16 } }, label),
-              Text({ style: { color: C.sub, fontSize: 13 } }, sub)),
-            h(RN.Switch, { value, onValueChange: change }));
+      return switchRow(key, label, sub, value, change);
     };
-
-    const Btn = (key, title, onPress, color) =>
-      h(RN.View, { key, style: { paddingHorizontal: 16, paddingVertical: 6 } }, h(RN.Button, { title, onPress, color }));
 
     const back = () => Btn("back", "< Back", () => { setScreen("main"); refreshUI(); });
 
@@ -1613,10 +1691,9 @@
         const searchable = [entry.an, entry.t, channelLabel(entry.c, entry.g)].join(" ").toLowerCase();
         return (!q || searchable.includes(q)) && (from === null || entry.at >= from) && (to === null || entry.at <= to);
       });
-      const rows = [back(), h(RN.View, { key: "title", style: { paddingHorizontal: 16, paddingVertical: 8 } },
-        Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, (isDel ? "Deleted messages" : "Edited messages") + " (" + filtered.length + ")")),
+      const rows = [back(), Title("title", (isDel ? "Deleted messages" : "Edited messages") + " (" + filtered.length + ")"),
         Btn("log-filters", "Search and filters", openLogFilters)];
-      if (!filtered.length) rows.push(Text({ key: "empty", style: { color: C.sub, padding: 16 } }, entries.length ? "No messages match this filter." : "Nothing logged yet."));
+      if (!filtered.length) rows.push(Empty("empty", entries.length ? "No messages match this filter." : "Nothing logged yet."));
       // Build each row in its own function scope, matching the ignored-list
       // renderer. This keeps the row identity and native press callback paired
       // even on the mobile React renderer when the list is reordered.
@@ -1656,9 +1733,8 @@
       const ig = ignored();
       const groups = [["guilds", "Servers"], ["channels", "Channels and DMs"], ["users", "Users"]];
       const total = groups.reduce((n, g) => n + Object.keys(ig[g[0]]).length, 0);
-      const rows = [back(), h(RN.View, { key: "title", style: { paddingHorizontal: 16, paddingVertical: 8 } },
-        Text({ style: { color: C.text, fontSize: 20, fontWeight: "700" } }, "Ignored (" + total + ")"))];
-        if (!total) rows.push(Text({ key: "empty", style: { color: C.sub, padding: 16 } }, "Nothing is ignored. Long-press a DM, open a profile's three-dot menu, or long-press a server or channel."));
+      const rows = [back(), Title("title", "Ignored (" + total + ")")];
+        if (!total) rows.push(Empty("empty", "Nothing is ignored. Long-press a DM, open a profile's three-dot menu, or long-press a server or channel."));
       groups.forEach(function (group) {
         const kind = group[0];
         const title = group[1];
@@ -1719,9 +1795,8 @@
       ];
     }
 
-    content.unshift(h(RN.View, { key: "build", style: { paddingHorizontal: 16, paddingTop: 8 } },
-      Text({ style: { color: C.sub, fontSize: 11 } }, "Build " + BUILD)));
-    return h(RN.ScrollView, { key: screen }, ...content);
+    content.unshift(screen === "main" ? Header("Advanced Message Logger", "Deleted and edited messages stay visible") : buildTag());
+    return h(RN.ScrollView, { key: screen, contentContainerStyle: { paddingBottom: 40 } }, ...compose(content));
   }
 
   function onLoad() {

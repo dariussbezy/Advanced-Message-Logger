@@ -1373,7 +1373,6 @@
   }
 
   function dismissDmMessageAlert(entry, jump) {
-    closeSettingsAlert();
     dmAlertShowing = false;
     if (jump && entry && entry.c && entry.id) {
       setTimeout(() => jumpTo(entry.c, entry.g, entry.id, null), 180);
@@ -1419,15 +1418,20 @@
   function showNextDmMessageAlert() {
     if (dmAlertShowing || !dmAlertQueue.length) return;
     const entry = dmAlertQueue.shift();
+    dmAlertShowing = true;
+    const deletedMessage = entry.kind === "deleted";
+    const title = deletedMessage ? "Deleted DM message" : "Edited DM message";
+    const buttons = [
+      { text: "Dismiss", style: "cancel", onPress: () => dismissDmMessageAlert(entry, false) },
+      { text: "Jump to message", onPress: () => dismissDmMessageAlert(entry, true) },
+    ];
     try {
-      if (ui.alerts && typeof ui.alerts.showCustomAlert === "function") {
-        dmAlertShowing = true;
-        ui.alerts.showCustomAlert(DmMessageAlert, { entry });
-        return;
-      }
-    } catch (_) { dmAlertShowing = false; }
-    toast((entry.kind === "deleted" ? "Deleted" : "Edited") + " DM message from " + entry.an + ": " + clip(entry.t, 80));
-    setTimeout(showNextDmMessageAlert, 180);
+      RN.Alert.alert(title, "From " + String(entry.an || "Unknown") + ":\n\n" + (entry.t || "(no message text)"), buttons, { cancelable: false });
+    } catch (_) {
+      dmAlertShowing = false;
+      toast(title + " from " + entry.an + ": " + clip(entry.t, 80));
+      setTimeout(showNextDmMessageAlert, 180);
+    }
   }
 
   function MessageCacheLimitModal(props) {
@@ -1558,19 +1562,30 @@
         action("Cancel", closeSettingsAlert, false), action("Clear", () => apply({ query: "", from: "", to: "" }), false), action("Apply", () => apply(), true), action("Save filter", save, true)));
   }
 
+  function settingsFormComponent(name) {
+    let formModule = null;
+    try { formModule = findByProps("Form", "FormSection"); } catch (_) {}
+    const direct = (formModule && formModule[name]) || (ui.components && ui.components.Forms && ui.components.Forms[name]);
+    if (typeof direct === "function" || direct && typeof direct === "object") return direct;
+    try {
+      const module = findByProps(name);
+      const component = module && module[name];
+      if (typeof component === "function" || component && typeof component === "object") return component;
+    } catch (_) {}
+    for (const searchExports of [false, true]) {
+      try {
+        const found = findByName(name, searchExports);
+        const component = found && (found.default || found[name] || found);
+        if (typeof component === "function" || component && typeof component === "object") return component;
+      } catch (_) {}
+    }
+    return null;
+  }
+
   function Settings() {
     vstorage.useProxy(plugin.storage);
     const [screen, setScreen] = React.useState("main");
-    const AnimatedScrollView = RN.Animated && RN.Animated.ScrollView;
-    const screenFade = React.useRef(AnimatedScrollView ? new RN.Animated.Value(1) : null).current;
-    React.useEffect(() => {
-      if (!screenFade || !RN.Animated || typeof RN.Animated.timing !== "function") return;
-      screenFade.setValue(0);
-      const animation = RN.Animated.timing(screenFade, { toValue: 1, duration: 110, useNativeDriver: true });
-      animation.start();
-      return () => animation.stop();
-    }, [screen]);
-    const screenStyle = screenFade ? { opacity: screenFade, transform: [{ translateY: screenFade.interpolate({ inputRange: [0, 1], outputRange: [3, 0] }) }] } : undefined;
+    const [filterReturn, setFilterReturn] = React.useState("deleted");
     const [limit, setLimit] = React.useState(PAGE);
     const [logFilter, setLogFilter] = React.useState({ query: "", from: "", to: "" });
     const [, bump] = React.useState(0);
@@ -1581,7 +1596,13 @@
       if (typeof useNavigation === "function") settingsNavigation = useNavigation();
     } catch (_) {}
     const refreshUI = () => bump((x) => x + 1);
-    const F = ui.components && ui.components.Forms;
+    const F = {
+      FormSection: settingsFormComponent("FormSection"),
+      FormRow: settingsFormComponent("FormRow"),
+      FormSwitchRow: settingsFormComponent("FormSwitchRow"),
+      FormDivider: settingsFormComponent("FormDivider"),
+      FormInput: settingsFormComponent("FormInput"),
+    };
     const C = palette();
     const h = React.createElement;
 
@@ -1631,13 +1652,13 @@
     };
 
     const PressRow = (key, label, sub, onPress, right, rightColor) => mark(
-      F && typeof F.FormRow === "function"
+      F && F.FormRow
         ? h(F.FormRow, { key, label, subLabel: sub, onPress, trailing: valueChip(right, rightColor) })
         : h(RN.Pressable, { key, onPress, accessibilityRole: "button", style: rowStyle },
           rowText(label, sub), valueChip(right, rightColor)));
 
     const switchRow = (key, label, sub, value, change) => mark(
-      F && typeof F.FormSwitchRow === "function"
+      F && F.FormSwitchRow
         ? h(F.FormSwitchRow, { key, label, subLabel: sub, value, onValueChange: change })
         : h(RN.Pressable, { key, onPress: () => change(!value), accessibilityRole: "button", style: rowStyle },
           h(RN.View, { style: { flex: 1, paddingRight: 12 } },
@@ -1646,38 +1667,14 @@
           h(RN.Switch, { value, onValueChange: change, trackColor: { false: C.off, true: C.blurple }, thumbColor: "#FFFFFF", ios_backgroundColor: C.off })));
 
     const Btn = (key, title, onPress, color) => {
-      if (key === "back") {
-        return h(RN.View, { key, style: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 2, flexDirection: "row" } },
-          h(RN.Pressable, { onPress, accessibilityRole: "button", style: ({ pressed }) => ({ paddingVertical: 9, paddingHorizontal: 16, borderRadius: 20, backgroundColor: pressed ? C.press : C.chip }) },
-            Text({ style: { color: C.text, fontSize: 15, fontWeight: "600" } }, "\u2039  Back")));
-      }
-      const danger = color === RED;
-      return h(RN.View, { key, style: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 } },
-        h(RN.Pressable, {
-          onPress, accessibilityRole: "button",
-          style: ({ pressed }) => ({ minHeight: 48, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: danger ? (pressed ? "rgba(237,66,69,0.30)" : "rgba(237,66,69,0.16)") : (pressed ? C.press : C.chip) }),
-        }, Text({ style: { color: danger ? RED : C.text, fontSize: 15, fontWeight: "700" } }, title)));
+      const label = key === "back" ? "‹  Back" : title;
+      if (F.FormRow) return mark(h(F.FormRow, { key, label, onPress }));
+      return mark(h(RN.Pressable, { key, onPress, accessibilityRole: "button", style: rowStyle }, rowText(label, null)));
     };
 
-    const Empty = (key, text) =>
-      h(RN.View, { key, style: { marginHorizontal: 16, marginTop: 12, padding: 24, borderRadius: 16, backgroundColor: C.card2, alignItems: "center" } },
-        Text({ style: { color: C.sub, fontSize: 14, lineHeight: 20, textAlign: "center" } }, text));
+    const Empty = (key, text) => Text({ key, style: { color: C.sub, fontSize: 14, lineHeight: 20, paddingHorizontal: 16, paddingVertical: 12 } }, text);
 
-    const Title = (key, text) =>
-      h(RN.View, { key, style: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 4 } },
-        Text({ style: { color: C.text, fontSize: 24, fontWeight: "700" } }, text));
-
-    const Header = (title, subtitle) =>
-      h(RN.View, { key: "build", style: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 2 } },
-        Text({ style: { color: C.text, fontSize: 28, fontWeight: "800" } }, title),
-        h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginTop: 8, flexWrap: "wrap" } },
-          h(RN.View, { style: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, backgroundColor: C.chip, marginRight: 10 } },
-            Text({ style: { color: C.sub, fontSize: 11, fontWeight: "700" } }, "Build " + BUILD)),
-          Text({ style: { color: C.sub, fontSize: 13, flexShrink: 1 } }, subtitle)));
-
-    const buildTag = () =>
-      h(RN.View, { key: "build", style: { paddingHorizontal: 20, paddingTop: 8 } },
-        Text({ style: { color: C.sub, fontSize: 11 } }, "Build " + BUILD));
+    const Title = (key, text) => Text({ key, style: { color: C.text, fontSize: 20, fontWeight: "700", paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6 } }, text);
 
     // Rows that sit next to each other are grouped into one rounded card with dividers.
     const compose = (list) => {
@@ -1685,7 +1682,7 @@
       let run = [];
       let title = null;
       let groupIndex = 0;
-      const nativeSections = F && typeof F.FormSection === "function";
+      const nativeSections = F && F.FormSection;
       const sectionHeader = (name) => h(RN.View, { key: "sec-title-" + groupIndex++, style: { paddingHorizontal: 30, paddingTop: 24, paddingBottom: 6 } },
         Text({ style: { color: C.acc, fontSize: 12, fontWeight: "700", letterSpacing: 0.8 } }, name.toUpperCase()));
       const flush = () => {
@@ -1695,18 +1692,18 @@
           return;
         }
         if (nativeSections) {
-          out.push(h(F.FormSection, { key: "form-section-" + groupIndex++, title: title || undefined }, ...run));
+          const nativeRows = [];
+          run.forEach((row, index) => {
+            if (index && F.FormDivider) nativeRows.push(h(F.FormDivider, { key: "form-divider-" + groupIndex++ }));
+            nativeRows.push(row);
+          });
+          out.push(h(F.FormSection, { key: "form-section-" + groupIndex++, title: title || undefined }, ...nativeRows));
           run = [];
           title = null;
           return;
         }
-        const kids = [];
-        run.forEach((r, i) => {
-          if (i) kids.push(h(RN.View, { key: "div-" + r.key, style: { height: 1, backgroundColor: C.divider, marginLeft: 16 } }));
-          kids.push(r);
-        });
         if (title) out.push(sectionHeader(title));
-        out.push(h(RN.View, { key: "card-" + out.length, style: { marginHorizontal: 16, marginTop: 4, borderRadius: 16, backgroundColor: C.card2, overflow: "hidden" } }, ...kids));
+        out.push(...run);
         run = [];
         title = null;
       };
@@ -1725,32 +1722,29 @@
       return switchRow(key, label, sub, value, change);
     };
 
-    const back = () => Btn("back", "< Back", () => { setScreen("main"); refreshUI(); });
+    const back = () => Btn("back", "< Back", () => { setScreen(screen === "filters" ? filterReturn : "main"); refreshUI(); });
 
     const more = (total) => total > limit ? Btn("more", "Show more", () => setLimit(limit + PAGE)) : null;
 
     const openLogFilters = () => {
-      const saved = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [];
-      try {
-        ui.alerts.showCustomAlert(LogFilterModal, {
-          initialValue: logFilter,
-          savedFilters: saved,
-          onApply: (filter) => { setLogFilter(filter); setLimit(PAGE); refreshUI(); },
-          onSave: (filter) => {
-            const next = saved.filter((item) => item.name !== filter.name);
-            next.unshift(filter);
-            cfg().savedLogFilters = next.slice(0, 20);
-            setLogFilter(filter);
-            setLimit(PAGE);
-            refreshUI();
-          },
-          onDeleteFilter: (index) => {
-            const current = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [];
-            cfg().savedLogFilters = current.filter((_, i) => i !== index);
-            refreshUI();
-          },
-        });
-      } catch (_) { toast("Could not open log filters"); }
+      setFilterReturn(screen);
+      setScreen("filters");
+      refreshUI();
+    };
+
+    const saveCurrentLogFilter = () => {
+      if (!RN.Alert || typeof RN.Alert.prompt !== "function") {
+        toast("Saved filter naming requires the native text prompt");
+        return;
+      }
+      RN.Alert.prompt("Save filter", "Name this search", (name) => {
+        const clean = String(name || "").trim();
+        if (!clean) return;
+        const saved = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [];
+        cfg().savedLogFilters = [{ ...logFilter, name: clean }, ...saved.filter((item) => item.name !== clean)].slice(0, 20);
+        refreshUI();
+        toast("Filter saved");
+      }, "plain-text", "");
     };
 
     const retentionLabel = () => (cfg().retentionDays === 7 ? "7 days" : cfg().retentionDays === 30 ? "30 days" : "Forever");
@@ -1764,24 +1758,55 @@
       refreshUI();
     };
     const editRawBufferLimit = () => {
+      const saveLimit = (value) => {
+        const count = Number(String(value || "").trim());
+        if (!Number.isInteger(count) || count < MIN_RAW_BUFFER || count > MAX_RAW_BUFFER) {
+          ask("Invalid message limit", "Enter a whole number from " + MIN_RAW_BUFFER + " to " + MAX_RAW_BUFFER + ".", [{ text: "OK" }]);
+          return;
+        }
+        cfg().maxCachedMessages = count;
+        trimMap(rawBuffer, count);
+        refreshUI();
+      };
+      if (RN.Alert && typeof RN.Alert.prompt === "function") {
+        RN.Alert.prompt("Maximum cached messages", "All Channels mode only. Higher values use more memory.", saveLimit, "plain-text", String(rawBufferLimit()), "number-pad");
+        return;
+      }
       try {
         ui.alerts.showCustomAlert(MessageCacheLimitModal, {
           initialValue: rawBufferLimit(),
-          onSave: (count) => {
-            cfg().maxCachedMessages = count;
-            trimMap(rawBuffer, count);
-            refreshUI();
-          },
+          onSave: saveLimit,
         });
       } catch (_) { toast("Could not open cache limit settings"); }
     };
     const editColor = (key, title, defaultValue) => {
+      const presets = [
+        ["Red", "#ED4245"], ["Orange", "#F07B3E"], ["Gold", "#F1C40F"], ["Green", "#43B581"], ["Teal", "#1ABC9C"],
+        ["Blue", "#3498DB"], ["Indigo", "#5865F2"], ["Purple", "#9B59B6"], ["Pink", "#EB459E"], ["Gray", "#80848E"],
+      ];
+      const saveColor = (value) => { cfg()[key] = value; refreshStyledMessages(); refreshUI(); };
+      const choose = (offset) => {
+        const choices = presets.slice(offset, offset + 4).map(([name, hex]) => ({ text: name, onPress: () => saveColor(hex) }));
+        if (offset + 4 < presets.length) choices.push({ text: "More colors", onPress: () => choose(offset + 4) });
+        choices.push({ text: "Enter HEX", onPress: () => {
+          if (!RN.Alert || typeof RN.Alert.prompt !== "function") { toast("Custom HEX entry is unavailable here"); return; }
+          RN.Alert.prompt(title, "Enter a color such as #3366FF", (value) => {
+            const hex = String(value || "").trim().toUpperCase();
+            if (/^#[0-9A-F]{6}$/.test(hex)) saveColor(hex);
+            else if (value != null) ask("Invalid color", "Use a HEX color such as #3366FF.", [{ text: "OK" }]);
+          }, "plain-text", colorValue(key, defaultValue));
+        } });
+        choices.push({ text: "Default", onPress: () => saveColor(defaultValue) });
+        choices.push({ text: "Cancel", style: "cancel" });
+        RN.Alert.alert(title, "Current: " + colorValue(key, defaultValue), choices, { cancelable: true });
+      };
+      if (RN.Platform && RN.Platform.OS === "ios" && RN.Alert && typeof RN.Alert.alert === "function") { choose(0); return; }
       try {
         ui.alerts.showCustomAlert(ColorSettingModal, {
           title,
           initialValue: colorValue(key, key === "editedMessageColor" ? GREY : RED),
           defaultValue,
-          onSave: (value) => { cfg()[key] = value; refreshStyledMessages(); refreshUI(); },
+          onSave: saveColor,
         });
       } catch (_) { toast("Could not open color settings"); }
     };
@@ -1870,7 +1895,29 @@
     };
 
     let content;
-    if (screen === "deleted" || screen === "edited") content = loggedScreen(screen);
+    if (screen === "filters") {
+      const saved = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [];
+      const updateFilter = (key, value) => setLogFilter((current) => ({ ...current, [key]: value }));
+      content = [Btn("back", "< Back", () => { setScreen(filterReturn); refreshUI(); }), Section("Search logs")];
+      if (F.FormInput) {
+        content.push(mark(h(F.FormInput, { key: "filter-query", title: "USER, CHANNEL OR MESSAGE", placeholder: "Search logged messages", value: logFilter.query, onChange: (value) => updateFilter("query", value) })));
+        content.push(mark(h(F.FormInput, { key: "filter-from", title: "FROM DATE", placeholder: "YYYY-MM-DD", value: logFilter.from, onChange: (value) => updateFilter("from", value) })));
+        content.push(mark(h(F.FormInput, { key: "filter-to", title: "TO DATE", placeholder: "YYYY-MM-DD", value: logFilter.to, onChange: (value) => updateFilter("to", value) })));
+      } else {
+        ["query", "from", "to"].forEach((key) => content.push(PressRow("filter-" + key, key === "query" ? "User, channel or message" : key === "from" ? "From date" : "To date", logFilter[key] || "Not set", () => {
+          if (RN.Alert && typeof RN.Alert.prompt === "function") RN.Alert.prompt("Search logs", key === "query" ? "User, channel or message" : "Date (YYYY-MM-DD)", (value) => { if (value != null) updateFilter(key, value); }, "plain-text", logFilter[key] || "");
+        })));
+      }
+      content.push(Section("Actions"), PressRow("filter-clear", "Clear search", "Remove all search terms and dates", () => { setLogFilter({ query: "", from: "", to: "" }); refreshUI(); }),
+        PressRow("filter-save", "Save current filter", "Save this search for later", saveCurrentLogFilter),
+        PressRow("filter-apply", "Apply and return", "Show matching messages", () => { setLimit(PAGE); setScreen(filterReturn); refreshUI(); }), Section("Saved filters"));
+      if (!saved.length) content.push(Empty("filter-empty", "No saved filters yet."));
+      saved.forEach((item, index) => {
+        content.push(PressRow("filter-use-" + index, item.name || "Saved filter", "Tap to apply this search", () => { setLogFilter({ query: item.query || "", from: item.from || "", to: item.to || "" }); setLimit(PAGE); setScreen(filterReturn); refreshUI(); }));
+        content.push(PressRow("filter-delete-" + index, "Delete " + (item.name || "saved filter"), "Remove this saved filter", () => ask("Delete saved filter?", item.name || "Saved filter", [{ text: "Delete", style: "destructive", onPress: () => { const latest = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : []; cfg().savedLogFilters = latest.filter((_, i) => i !== index); refreshUI(); } }])));
+      });
+    }
+    else if (screen === "deleted" || screen === "edited") content = loggedScreen(screen);
     else if (screen === "ignored") content = ignoredScreen();
     else {
       const ig = ignored();
@@ -1910,8 +1957,7 @@
       ];
     }
 
-    content.unshift(screen === "main" ? Header("Advanced Message Logger", "Deleted and edited messages stay visible") : buildTag());
-    return h(AnimatedScrollView || RN.ScrollView, { key: screen, style: screenStyle, contentContainerStyle: { paddingBottom: 40 } }, ...compose(content));
+    return h(RN.ScrollView, { key: screen, contentContainerStyle: { paddingBottom: 24 } }, ...compose(content));
   }
 
   function onLoad() {

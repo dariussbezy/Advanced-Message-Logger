@@ -1366,14 +1366,11 @@ const implementation = (() => {
 
   function palette() {
     let light = false;
-    try {
-      ThemeStore = ThemeStore || findByStoreName("ThemeStore");
-      light = !!ThemeStore && ThemeStore.theme === "light";
-    } catch (_) {}
+    try { ThemeStore = ThemeStore || findByStoreName("ThemeStore"); light = !!ThemeStore && ThemeStore.theme === "light"; } catch (_) {}
     return light
       ? { text: "#060607", sub: "#5C5E66", bg: "#FFFFFF", card: "#F2F3F5", acc: "#5865F2", accPressed: "#4752C4", blurple: "#5865F2", card2: "rgba(0,0,0,0.045)", chip: "rgba(0,0,0,0.07)", press: "rgba(0,0,0,0.06)", divider: "rgba(0,0,0,0.09)", off: "#B5BAC1" }
-      : { text: "#FFFFFF", sub: "#B5BAC1", bg: "#1E1F22", card: "#2B2D31", acc: "#8EA1FF", accPressed: "#788BFF", blurple: "#8EA1FF", card2: "rgba(255,255,255,0.06)", chip: "rgba(255,255,255,0.10)", press: "rgba(255,255,255,0.07)", divider: "rgba(255,255,255,0.09)", off: "#4E5058" };
-  }
+      : { text: "#FFFFFF", sub: "#B5BAC1", bg: "#1E1F22", card: "#2B2D31", acc: "#5865F2", accPressed: "#4752C4", blurple: "#5865F2", card2: "rgba(255,255,255,0.06)", chip: "rgba(255,255,255,0.10)", press: "rgba(255,255,255,0.07)", divider: "rgba(255,255,255,0.09)", off: "#4E5058" };
+}
 
   function closeSettingsAlert() {
     try {
@@ -1472,92 +1469,6 @@ const implementation = (() => {
         action("Cancel", closeSettingsAlert, false), action("Save", save, true)));
   }
 
-  function ColorSettingModal(props) {
-    const [value, setValue] = React.useState(String(props.initialValue || RED));
-    const [error, setError] = React.useState("");
-    const colors = palette();
-    const action = (label, onPress, primary) => React.createElement(RN.Pressable, {
-      key: label,
-      onPress,
-      accessibilityRole: "button",
-      style: { minHeight: 46, paddingHorizontal: 18, borderRadius: 14, marginLeft: primary ? 10 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? colors.acc : "rgba(128,128,128,0.22)" },
-    }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" } }, label));
-    const save = () => {
-      const hex = String(value).trim().toUpperCase();
-      if (!/^#[0-9A-F]{6}$/.test(hex)) { setError("Enter a HEX color such as #3366FF."); return; }
-      closeSettingsAlert();
-      if (typeof props.onSave === "function") props.onSave(hex);
-    };
-    const presets = [
-      ["Red", "#ED4245"], ["Orange", "#F07B3E"], ["Gold", "#F1C40F"], ["Green", "#43B581"], ["Teal", "#1ABC9C"],
-      ["Blue", "#3498DB"], ["Indigo", "#5865F2"], ["Purple", "#9B59B6"], ["Pink", "#EB459E"], ["Gray", "#80848E"],
-    ];
-    return React.createElement(RN.ScrollView, { style: { width: "92%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 18, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
-      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, props.title || "Message color"),
-      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 12 } }, "Choose a preset or enter a HEX color."),
-      React.createElement(RN.View, { style: { flexDirection: "row", flexWrap: "wrap", marginBottom: 12 } }, presets.map(([label, hex]) => React.createElement(RN.Pressable, {
-        key: hex, onPress: () => { setValue(hex); setError(""); }, accessibilityRole: "button", accessibilityLabel: label,
-        style: { width: 62, alignItems: "center", marginRight: 6, marginBottom: 8 },
-      }, React.createElement(RN.View, { style: { width: 34, height: 34, borderRadius: 17, backgroundColor: hex, borderWidth: value.toUpperCase() === hex ? 3 : 1, borderColor: colors.text } }),
-      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 11, marginTop: 3 } }, label)))),
-      React.createElement(RN.View, { style: { width: 44, height: 24, marginBottom: 12, borderRadius: 6, backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(value) ? value : "transparent", borderWidth: 1, borderColor: colors.sub } }),
-      React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, autoCapitalize: "characters", autoCorrect: false, accessibilityLabel: "HEX color", placeholder: "#3366FF", style: { minHeight: 48, paddingHorizontal: 14, borderRadius: 14, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
-      error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
-      React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", flexWrap: "wrap", marginTop: 18 } },
-        action("Default", () => { closeSettingsAlert(); if (typeof props.onSave === "function") props.onSave(props.defaultValue); }, false),
-        action("Cancel", closeSettingsAlert, false), action("Save", save, true)));
-  }
-
-  function openNativeColorAlert(props) {
-    const api = findByProps("openAlert", "dismissAlert");
-    if (!api || typeof api.openAlert !== "function") throw new Error("Discord alert API unavailable");
-    api.openAlert("aml-color-setting", React.createElement(NativeColorAlert, props));
-  }
-
-  function NativeColorAlert(props) {
-    const [value, setValue] = React.useState(String(props.initialValue || props.defaultValue || RED));
-    const [error, setError] = React.useState("");
-    const h = React.createElement;
-    const alerts = findByProps("openAlert", "dismissAlert");
-    const alertParts = findByProps("AlertModal", "AlertActions", "AlertActionButton");
-    const groupModule = findByProps("TableRowGroup");
-    const rowModule = findByProps("TableRow");
-    const tableGroup = groupModule && groupModule.TableRowGroup;
-    const tableRow = rowModule && rowModule.TableRow;
-    const inputModule = findByProps("TextInput");
-    const Input = inputModule && inputModule.TextInput;
-    const presets = [
-      ["Red", "#ED4245"], ["Orange", "#F07B3E"], ["Gold", "#F1C40F"], ["Green", "#43B581"], ["Teal", "#1ABC9C"],
-      ["Blue", "#3498DB"], ["Indigo", "#5865F2"], ["Purple", "#9B59B6"], ["Pink", "#EB459E"], ["Gray", "#80848E"],
-    ];
-    const dismiss = () => { try { alerts.dismissAlert("aml-color-setting"); } catch (_) {} };
-    const save = (hex) => {
-      if (typeof props.onSave === "function") props.onSave(hex);
-      dismiss();
-    };
-    if (!alertParts || !tableGroup || !tableRow) return h(RN.Text, null, "Color settings are unavailable.");
-    const rows = presets.map(([label, hex]) => h(tableRow, {
-      key: hex, label, onPress: () => setValue(hex),
-      icon: h(RN.View, { style: { width: 20, height: 20, borderRadius: 10, backgroundColor: hex } }),
-      trailing: value.toUpperCase() === hex && tableRow.TrailingText ? h(tableRow.TrailingText, { text: "Selected" }) : undefined,
-    }));
-    const extraContent = h(RN.ScrollView, { style: { maxHeight: 420 } },
-      h(tableGroup, { title: "Basic colors" }, ...rows),
-      h(tableGroup, { title: "Custom HEX" },
-        Input ? h(Input, { value, onChange: (next) => { setValue(next); setError(""); }, placeholder: "#3366FF", autoCapitalize: "characters", autoCorrect: false })
-          : h(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, placeholder: "#3366FF", autoCapitalize: "characters", autoCorrect: false }),
-        error ? h(RN.Text, { style: { color: RED, padding: 8 } }, error) : null));
-    const actions = h(alertParts.AlertActions, null,
-      h(alertParts.AlertActionButton, { text: "Default", variant: "secondary", onPress: () => save(props.defaultValue) }),
-      h(alertParts.AlertActionButton, { text: "Cancel", variant: "secondary", onPress: dismiss }),
-      h(alertParts.AlertActionButton, { text: "Save", variant: "primary", disabled: !/^#[0-9A-Fa-f]{6}$/.test(value), onPress: () => {
-        const hex = String(value).trim().toUpperCase();
-        if (!/^#[0-9A-F]{6}$/.test(hex)) { setError("Enter a HEX color such as #3366FF."); return; }
-        save(hex);
-      } }));
-    return h(alertParts.AlertModal, { title: props.title || "Message color", content: "Choose a preset or enter a HEX color.", extraContent, actions });
-  }
-
   function LogFilterModal(props) {
     const initial = props.initialValue || {};
     const [query, setQuery] = React.useState(initial.query || "");
@@ -1643,19 +1554,19 @@ const implementation = (() => {
   }
 
   function CustomSection(p){const C=palette();return React.createElement(RN.View,{style:{marginBottom:p.compact?14:22}},p.title?React.createElement(RN.Text,{style:{color:C.sub,fontSize:13,fontWeight:"700",letterSpacing:.4,marginHorizontal:5,marginBottom:9,textTransform:"uppercase"}},p.title):null,React.createElement(RN.View,{style:{backgroundColor:C.card,borderRadius:17,overflow:"hidden",borderWidth:1,borderColor:C.card2}},p.children));}
-  function CustomRow(p){const C=palette();return React.createElement(RN.Pressable,{onPress:p.onPress,disabled:!p.onPress,style:({pressed})=>({minHeight:58,paddingHorizontal:15,paddingVertical:12,flexDirection:"row",alignItems:"center",backgroundColor:pressed?C.press:"transparent"})},p.icon?React.createElement(RN.Text,{style:{width:30,fontSize:18,color:C.sub,marginRight:7,textAlign:"center"}},p.icon):null,React.createElement(RN.View,{style:{flex:1,minWidth:0,paddingRight:8}},React.createElement(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:16,fontWeight:"600"}},p.title),p.subtitle?React.createElement(RN.Text,{numberOfLines:2,style:{color:C.sub,fontSize:13,marginTop:3,lineHeight:18}},p.subtitle):null),p.trailing||null,!p.last?React.createElement(RN.View,{style:{position:"absolute",bottom:0,left:p.icon?52:15,right:0,height:1,backgroundColor:C.card2}}):null);}
+  function CustomRow(p){const C=palette();return React.createElement(RN.Pressable,{onPress:p.onPress,disabled:!p.onPress,style:({pressed})=>({minHeight:58,paddingHorizontal:15,paddingVertical:12,flexDirection:"row",alignItems:"center",backgroundColor:pressed?C.press:"transparent"})},p.icon?React.createElement(RN.Text,{style:{width:30,fontSize:18,color:C.sub,marginRight:7}},p.icon):null,React.createElement(RN.View,{style:{flex:1,minWidth:0,paddingRight:8}},React.createElement(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:16,fontWeight:"600"}},p.title),p.subtitle?React.createElement(RN.Text,{numberOfLines:2,style:{color:C.sub,fontSize:13,marginTop:3,lineHeight:18}},p.subtitle):null),p.trailing||null,!p.last?React.createElement(RN.View,{style:{position:"absolute",bottom:0,left:p.icon?52:15,right:0,height:1,backgroundColor:C.card2}}):null);}
   function CustomSwitch(p){const C=palette(),on=!!p.value,pos=React.useRef(new RN.Animated.Value(on?1:0)).current;React.useEffect(()=>{RN.Animated.spring(pos,{toValue:on?1:0,speed:22,bounciness:3,useNativeDriver:true}).start();},[on]);return React.createElement(RN.Pressable,{accessibilityRole:"switch",accessibilityState:{checked:on},onPress:()=>p.onChange(!on),hitSlop:8,style:{width:48,height:29,borderRadius:16,padding:3,justifyContent:"center",backgroundColor:on?C.blurple:C.off}},React.createElement(RN.Animated.View,{style:{width:23,height:23,borderRadius:12,backgroundColor:"#FFFFFF",elevation:1,transform:[{translateX:pos.interpolate({inputRange:[0,1],outputRange:[0,19]})}]}}));}
-  function CustomAction(p){const C=palette(),fill=p.danger?"#ED4245":p.secondary?C.chip:C.blurple;return React.createElement(RN.Pressable,{onPress:p.onPress,disabled:p.disabled,accessibilityRole:"button",style:({pressed})=>({minHeight:48,borderRadius:13,alignItems:"center",justifyContent:"center",paddingHorizontal:16,marginTop:9,backgroundColor:fill,opacity:p.disabled ? 0.45 : pressed ? 0.75 : 1})},React.createElement(RN.Text,{style:{color:p.secondary&&!p.danger?C.text:"#FFFFFF",fontWeight:"700",fontSize:16}},p.title));}
+  function CustomAction(p){const C=palette();return React.createElement(RN.Pressable,{onPress:p.onPress,disabled:p.disabled,style:({pressed})=>({minHeight:48,borderRadius:13,alignItems:"center",justifyContent:"center",paddingHorizontal:16,marginTop:9,backgroundColor:p.secondary?C.chip:C.blurple,opacity:p.disabled?0.45:pressed?0.75:1})},React.createElement(RN.Text,{style:{color:"#FFFFFF",fontWeight:"700",fontSize:16}},p.title));}
   function CustomInput(p){const C=palette();return React.createElement(RN.TextInput,{...p,placeholderTextColor:C.sub,style:[{minHeight:48,borderRadius:13,borderWidth:1,borderColor:C.off,backgroundColor:C.bg,color:C.text,paddingHorizontal:14,fontSize:16},p.style]});}
   function Settings() {
     rainStore.useStore();
     const [screen, setScreen] = React.useState("main");
+    const screenProgress = React.useRef(new RN.Animated.Value(1)).current;
+    React.useEffect(() => { screenProgress.setValue(0); RN.Animated.timing(screenProgress, { toValue: 1, duration: 180, useNativeDriver: true }).start(); }, [screen]);
     const [filterReturn, setFilterReturn] = React.useState("deleted");
     const [limit, setLimit] = React.useState(PAGE);
     const [logFilter, setLogFilter] = React.useState({ query: "", from: "", to: "" });
     const [colorEditor, setColorEditor] = React.useState(null);
-    const [colorDraft, setColorDraft] = React.useState(RED);
-    const [colorError, setColorError] = React.useState("");
     const [, bump] = React.useState(0);
     let settingsNavigation = null;
     try {
@@ -1734,7 +1645,7 @@ const implementation = (() => {
     const Text=(props,...kids)=>h(RN.Text,props,...kids),rowIcon=(key)=>/color/.test(key)?"\u25C9":/capture|cache|message|history|nav|log/.test(key)?"\u25F7":/filter|search/.test(key)?"\u2315":/ignore/.test(key)?"\u2298":"\u2726";
     const Section=(title)=>{const m=h(RN.View,{key:"sec-"+title});sectionTitles.set(m,title);return m;};
     const valueChip=(r)=>{if(!r)return null;if(r===">"||r==="\u203A")return Text({style:{color:C.sub,fontSize:21,marginLeft:7}},"\u203A");const v=String(r);if(HEXCOLOR.test(v))return h(RN.View,{style:{flexDirection:"row",alignItems:"center",marginLeft:8}},h(RN.View,{style:{width:18,height:18,borderRadius:9,backgroundColor:v,borderWidth:1,borderColor:C.divider}}),Text({style:{color:C.sub,fontSize:13,marginLeft:8}},v));return Text({style:{color:C.sub,fontSize:14,marginLeft:8},numberOfLines:1},v);};
-    const PressRow=(key,label,sub,onPress,right)=>mark(h(CustomRow,{key,title:label,subtitle:sub,icon:rowIcon(key),onPress,trailing:valueChip(right)}));
+    const PressRow=(key,label,sub,onPress,right)=>mark(h(CustomRow,{key,title:label,subtitle:sub,onPress,trailing:valueChip(right)}));
     const switchRow=(key,label,sub,value,change)=>mark(h(CustomRow,{key,title:label,subtitle:sub,trailing:h(CustomSwitch,{value,onChange:change})}));
     const Btn=(key,title,onPress,color)=>mark(h(CustomAction,{key,title:key==="back"?"\u2039  Back":title,onPress,secondary:key!=="clear"&&key!=="test",danger:color===RED}));
     const Empty=(key,t)=>Text({key,style:{color:C.sub,fontSize:14,lineHeight:20,paddingHorizontal:14,paddingVertical:14,textAlign:"center"}},t),Title=(key,t)=>Text({key,style:{color:C.text,fontSize:22,fontWeight:"800",paddingTop:8,paddingBottom:8}},t);
@@ -1767,10 +1678,10 @@ const implementation = (() => {
     };
 
     const retentionLabel = () => (cfg().retentionDays === 7 ? "7 days" : cfg().retentionDays === 30 ? "30 days" : "Forever");
-    const captureModeLabel = () => cfg().captureMode === "expanded" ? "All received events" : "Loaded Only";
+    const captureModeLabel = () => cfg().captureMode === "expanded" ? "All new messages" : "Loaded messages";
     const captureModeDescription = () => cfg().captureMode === "expanded"
-      ? "Keeps new messages received outside the open chat. Only messages delivered by Discord can be recorded."
-      : "Lowest resource use; check only messages already loaded by Discord";
+      ? "Save messages delivered while other chats are open."
+      : "Save messages already loaded in the open chat.";
     const cycleCaptureMode = () => {
       cfg().captureMode = cfg().captureMode === "expanded" ? "loaded" : "expanded";
       if (cfg().captureMode === "loaded") clearRawBuffer();
@@ -1792,7 +1703,7 @@ const implementation = (() => {
         openNativeInputAlert({ id: "aml-cache-limit", title: "Maximum cached messages", content: "Messages received by Discord · approx. 8 MiB cache budget", initialValue: rawBufferLimit(), keyboardType: "number-pad", onSave: saveLimit });
       } catch (_) { toast("Could not open cache limit settings"); }
     };
-    const editColor=(key,title,defaultValue)=>{setColorEditor({key,title,defaultValue});setColorDraft(colorValue(key,defaultValue));setColorError("");setScreen("color");};
+    const editColor=(key,title,defaultValue)=>{setColorEditor({key,title,defaultValue});setScreen("color");};
     const cycleRetention = () => {
       const cur = cfg().retentionDays || 0;
       cfg().retentionDays = cur === 0 ? 7 : cur === 7 ? 30 : 0;
@@ -1879,9 +1790,16 @@ const implementation = (() => {
 
     let content;
     if(screen==="color"&&colorEditor){
-      const presets=[["Red","#ED4245"],["Orange","#F07B3E"],["Gold","#F1C40F"],["Green","#43B581"],["Teal","#1ABC9C"],["Blue","#3498DB"],["Indigo","#5865F2"],["Purple","#9B59B6"],["Pink","#EB459E"],["Gray","#80848E"]];
+      const presets=[["Default",colorEditor.defaultValue],["Red","#ED4245"],["Orange","#F07B3E"],["Gold","#F1C40F"],["Green","#43B581"],["Teal","#1ABC9C"],["Blue","#3498DB"],["Indigo","#5865F2"],["Purple","#9B59B6"],["Pink","#EB459E"],["Gray","#80848E"]];
+      const current=colorValue(colorEditor.key,colorEditor.defaultValue);
       const applyColor=(v)=>{cfg()[colorEditor.key]=v;refreshStyledMessages();setColorEditor(null);setScreen("main");refreshUI();};
-      content=[Btn("back","Back",()=>{setColorEditor(null);setScreen("main");}),Title("color-title",colorEditor.title),Section("Preview"),PressRow("color-preview","Example message","Preview of the selected color",null,colorDraft),Section("Color presets"),...presets.map(([label,hex])=>PressRow("color-"+hex,label,hex,()=>{setColorDraft(hex);setColorError("");},hex)),Section("Custom HEX"),mark(h(RN.View,{key:"color-input",style:{padding:14}},h(RN.Text,{style:{color:C.sub,fontSize:13,marginBottom:8}},"Enter a HEX value such as #3366FF"),h(CustomInput,{value:colorDraft,onChangeText:(v)=>{setColorDraft(v);setColorError("");},autoCapitalize:"characters",autoCorrect:false,accessibilityLabel:"HEX color"}),colorError?h(RN.Text,{style:{color:RED,fontSize:13,marginTop:8}},colorError):null)),Section("Actions"),Btn("default-color","Use default",()=>applyColor(colorEditor.defaultValue)),Btn("save-color","Save color",()=>{const v=String(colorDraft).trim().toUpperCase();if(!HEXCOLOR.test(v)){setColorError("Enter a valid HEX color, for example #3366FF.");refreshUI();return;}applyColor(v);})];
+      content=[
+        Text({key:"color-title",style:{color:C.text,fontSize:20,fontWeight:"700",marginBottom:6}},colorEditor.title),
+        Text({key:"color-help",style:{color:C.sub,fontSize:14,marginBottom:8}},"Choose a color preset. Your choice saves automatically."),
+        Text({key:"color-current",style:{color:C.sub,fontSize:13,marginBottom:16}},"Current color: "+current),
+        h(CustomSection,{key:"color-presets",title:"Color presets"},...presets.map(([label,hex],index)=>h(CustomRow,{key:"color-"+hex,title:label,subtitle:hex,last:index===presets.length-1,trailing:h(RN.View,{style:{flexDirection:"row",alignItems:"center",gap:10,marginRight:6}},h(RN.View,{style:{width:20,height:20,borderRadius:10,backgroundColor:hex}}),current===hex?h(RN.Text,{style:{color:C.blurple,fontWeight:"800",width:18,textAlign:"center"}},"✓"):h(RN.View,{style:{width:18}})),onPress:()=>applyColor(hex)}))),
+        h(CustomAction,{key:"color-default",title:"Use default",secondary:true,onPress:()=>applyColor(colorEditor.defaultValue)})
+      ];
     } else if (screen === "filters") {
       const saved = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [];
       const updateFilter = (key, value) => setLogFilter((current) => ({ ...current, [key]: value }));
@@ -1920,7 +1838,7 @@ const implementation = (() => {
           else scheduleRawArchiveSave();
           refreshUI();
         }),
-        PressRow("test-capture", "Test message capture", "Count new message events since this plugin started", showCaptureTest, ">"),
+        PressRow("test-capture", "Test message capture", "Count new messages since this plugin started", showCaptureTest, ">"),
         PressRow("cache-limit", "Maximum cached messages", "Delivered messages only · capped memory cache", editRawBufferLimit, String(rawBufferLimit())),
         Section("Display"),
         PressRow("deleted-color", "Deleted message color", "Text and highlight color", () => editColor("deletedMessageColor", "Deleted message color", RED), colorValue("deletedMessageColor", RED)),
@@ -1946,9 +1864,9 @@ const implementation = (() => {
       ];
     }
 
-    const buildLabel = Text({ key: "build", style: { color: C.sub, fontSize: 12, paddingHorizontal: 4, paddingBottom: 4 } }, "Build " + BUILD);
+    const buildLabel = Text({ key: "build", style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Adv. Message Logger " + BUILD);
     const header = screen === "main" ? [Text({ key: "header-title", style: { color: C.text, fontSize: 25, fontWeight: "800", marginBottom: 5 } }, "Adv. Message Logger"), Text({ key: "header-subtitle", style: { color: C.sub, fontSize: 14, marginBottom: 20 } }, "Message history and capture preferences")] : [];
-    return h(RN.ScrollView, { key: screen, style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 42 } }, ...header, buildLabel, ...compose(content));
+    return h(RN.Animated.View, { style: { flex: 1, opacity: screenProgress, transform: [{ translateY: screenProgress.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }] } }, h(RN.ScrollView, { key: screen, style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 42 } }, ...header, ...compose(content), buildLabel));
   }
 
   function onLoad() {

@@ -1509,8 +1509,8 @@ const implementation = (() => {
     const saved = Array.isArray(props.savedFilters) ? props.savedFilters : [];
     return React.createElement(RN.ScrollView, { style: { width: "92%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 18, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
       React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Search logs"),
-      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 13 } }, "Search matches user, channel, and message text."),
-      field("User, channel, or message", query, setQuery),
+      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 13 } }, "Search matches user, channel, server, and message text."),
+      field("User, channel, server, or message", query, setQuery),
       field("From (YYYY-MM-DD)", from, setFrom),
       field("To (YYYY-MM-DD)", to, setTo),
       error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
@@ -1859,7 +1859,7 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
       const saved = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [];
       const updateFilter = (key, value) => setLogFilter((current) => ({ ...current, [key]: value }));
       content = [Btn("back", "< Back", () => { setScreen(filterReturn); refreshUI(); }), Section("Search logs")];
-      const filterFields = [["query", "User, channel or message", "Search logged messages"], ["from", "From date", "YYYY-MM-DD"], ["to", "To date", "YYYY-MM-DD"]];
+      const filterFields = [["query", "User, channel, server or message", "Search logged messages"], ["from", "From date", "YYYY-MM-DD"], ["to", "To date", "YYYY-MM-DD"]];
       filterFields.forEach(([key, label, placeholder]) => content.push(mark(h(RN.View, { key: "filter-" + key, style: { paddingHorizontal: 14, paddingVertical: 9 } },
         h(RN.Text, { style: { color: C.sub, fontSize: 12, fontWeight: "700", marginBottom: 7 } }, label),
         h(CustomInput, { value: logFilter[key], placeholder, onChangeText: (value) => updateFilter(key, value), autoCorrect: false, autoCapitalize: "none" })))));

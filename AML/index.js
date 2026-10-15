@@ -1919,7 +1919,7 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
       ];
     }
 
-    const helpFooter = screen === "main" ? h(RN.View, { key: "settings-guide", style: { marginTop: 16, marginBottom: 10, padding: 13, borderRadius: 15, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2 } }, Text({ style: { color: C.text, fontSize: 16, fontWeight: "700", marginBottom: 7 } }, "Quick guide"), Text({ style: { color: C.sub, fontSize: 14, lineHeight: 20 } }, "Save new messages locally when Remember new messages is on."), Text({ style: { color: C.sub, fontSize: 14, lineHeight: 20, marginTop: 5 } }, "Deleted and edited messages can be filtered and kept for your chosen period.")) : null;
+    const helpFooter = screen === "main" ? h(RN.View, { key: "settings-guide", style: { marginTop: 18, marginBottom: 12, padding: 16, borderRadius: 15, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2 } }, Text({ style: { color: C.text, fontSize: 20, fontWeight: "800", marginBottom: 8 } }, "Quick guide"), Text({ style: { color: C.sub, fontSize: 17, lineHeight: 23 } }, "New messages are saved locally. Find edits and deletions in history.")) : null;
     const buildLabel = Text({ key: "build", style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Advanced Message Logger " + BUILD);
     const header = screen === "main" ? [Text({ key: "header-title", style: { color: C.text, fontSize: 25, fontWeight: "800", marginBottom: 5 } }, "Advanced Message Logger"), Text({ key: "header-subtitle", style: { color: C.sub, fontSize: 14, marginBottom: 20 } }, "Message history and capture preferences")] : [];
     return h(RN.Animated.View, { style: { flex: 1, opacity: screenProgress, transform: [{ translateY: screenProgress.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }] } }, h(RN.ScrollView, { key: screen, style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 42 } }, ...header, ...compose(content), helpFooter, buildLabel));
@@ -1939,6 +1939,7 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
       notifyDeleted: false, notifyEdited: false,
     };
     for (const k of Object.keys(defaults)) if (s[k] === undefined) s[k] = defaults[k];
+    if (s.captureModeDefaultMigration !== 1) { s.captureMode = "expanded"; s.captureModeDefaultMigration = 1; }
     if (s.maxCachedMessagesDefaultMigration !== 1) {
       if (Number(s.maxCachedMessages) === 500) s.maxCachedMessages = DEFAULT_RAW_BUFFER;
       s.maxCachedMessagesDefaultMigration = 1;

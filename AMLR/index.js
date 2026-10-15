@@ -1,5 +1,5 @@
 const rainRuntime = globalThis.rain;
-if (!rainRuntime || !rainRuntime.api || !rainRuntime.api.storage) throw new Error("Rain plugin API unavailable");
+if (!rainRuntime || !rainRuntime.api || !rainRuntime.api.storage) throw new Error("Discord plugin API unavailable");
 const rainStore = rainRuntime.api.storage.createPluginStore("aml", {});
 const pluginStorage = rainStore.settings;
 const implementation = (() => {
@@ -23,7 +23,7 @@ const implementation = (() => {
   const MAX_RAW_SIZE = 20000;
   const MAX_RAW_CACHE_BYTES = 8 * 1024 * 1024;
   const RAW_ARCHIVE_SAVE_DELAY = 30000;
-  const BUILD = "Rain v1.0.1";
+  const BUILD = "v1.0.2";
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -653,7 +653,7 @@ const implementation = (() => {
           break;
         }
         case "MESSAGE_CREATE": {
-          // Keep a bounded in-memory snapshot of messages Rain receives even
+          // Keep a bounded in-memory snapshot of messages Discord receives even
           // when their channel is not currently open in MessageStore.
           remember(e.message);
           if (e.message && e.message.id) {
@@ -725,139 +725,14 @@ const implementation = (() => {
     return true;
   }
 
-  function jumpTo(channelId, guildId, messageId, navigation) {
-    const real = messageId && !String(messageId).startsWith("test-") ? messageId : null;
-    const openMessagesTab = () => {
-      let current = navigation;
-      for (let depth = 0; current && depth < 8; depth++) {
-        let state = null;
-        try { state = typeof current.getState === "function" ? current.getState() : null; } catch (_) {}
-        const routes = state && Array.isArray(state.routes) ? state.routes : [];
-        const target = routes.find((route) => /^(home|messages|messagestab|hometab|directmessages)$/i.test(String(route.name || ""))) ||
-          routes.find((route) => /home|messages|direct.?messages/i.test(String(route.name || "")) && !/setting|profile|you/i.test(String(route.name || "")));
-        if (target) {
-          try {
-            if (typeof current.jumpTo === "function") current.jumpTo(target.name);
-            else if (typeof current.navigate === "function") current.navigate(target.name);
-            else return false;
-            return true;
-          } catch (_) {}
-        }
-        try { current = typeof current.getParent === "function" ? current.getParent() : null; }
-        catch (_) { current = null; }
-      }
-      return false;
-    };
-    const dismissProfileRoute = () => {
-      let current = navigation;
-      for (let depth = 0; current && depth < 8; depth++) {
-        let state = null;
-        try { state = typeof current.getState === "function" ? current.getState() : null; } catch (_) {}
-        const routes = state && Array.isArray(state.routes) ? state.routes : [];
-        const active = routes[state && Number.isInteger(state.index) ? state.index : routes.length - 1];
-        const routeName = String(active && active.name || "");
-        if (/user.?profile|profile.?modal/i.test(routeName) && !/you|settings/i.test(routeName)) {
-          try {
-            if (typeof current.goBack === "function" && current.canGoBack()) current.goBack();
-            else if (typeof current.dismiss === "function") current.dismiss();
-            return true;
-          } catch (_) {}
-        }
-        try { current = typeof current.getParent === "function" ? current.getParent() : null; }
-        catch (_) { current = null; }
-      }
-      return false;
-    };
-    const selectAfterClose = () => {
-      setTimeout(() => {
-        // UserProfile is often presented as a modal above the tab navigator.
-        // Closing only the plugin settings route leaves that profile modal
-        // visible, so close the app modal stack before selecting Messages.
-        try {
-          const modalActions = findByProps("closeAllModals");
-          if (modalActions && typeof modalActions.closeAllModals === "function") modalActions.closeAllModals();
-        } catch (_) {}
-        try { FluxDispatcher.dispatch({ type: "USER_PROFILE_MODAL_CLOSE" }); } catch (_) {}
-        try { FluxDispatcher.dispatch({ type: "USER_SETTINGS_MODAL_CLOSE" }); } catch (_) {}
-        setTimeout(() => {
-          dismissProfileRoute();
-          setTimeout(() => {
-            openMessagesTab();
-            setTimeout(() => {
-              // Use the client's channel router so navigation leaves the
-              // profile tab and enters the actual Rain conversation route.
-              try {
-                const channelRouter = findByProps("transitionToChannel");
-                if (channelRouter && typeof channelRouter.transitionToChannel === "function") {
-                  channelRouter.transitionToChannel(String(channelId));
-                }
-              } catch (_) {}
-              try {
-                const navigationRouter = findByProps("transitionTo");
-                const path = guildId
-                  ? "/channels/" + String(guildId) + "/" + String(channelId)
-                  : "/channels/@me/" + String(channelId);
-                if (navigationRouter && typeof navigationRouter.transitionTo === "function") navigationRouter.transitionTo(path);
-              } catch (_) {}
-              try { FluxDispatcher.dispatch({ type: "CHANNEL_SELECT", guildId: guildId || null, channelId }); } catch (_) {}
-              if (!real) return;
-              const actions = findByProps("jumpToMessage");
-              if (!actions || typeof actions.jumpToMessage !== "function") {
-                toast("Could not find Rain's message navigation action");
-                return;
-              }
-              const performMessageJump = () => {
-                try {
-                  actions.jumpToMessage({ channelId, messageId: real, flash: true, jumpType: "INSTANT" });
-                  return true;
-                } catch (_) {
-                  try { actions.jumpToMessage(channelId, real, true); return true; }
-                  catch (_) { toast("Rain could not jump to that message"); return false; }
-                }
-              };
-              const jumpWhenMessageIsReady = (attemptsLeft) => {
-                if (getMessage(channelId, real)) {
-                  // The first jump requests older history; repeat after the
-                  // target enters MessageStore so the list can scroll to it.
-                  return setTimeout(performMessageJump, 180);
-                }
-                if (attemptsLeft > 0) return setTimeout(() => jumpWhenMessageIsReady(attemptsLeft - 1), 150);
-                toast("The message did not load yet. Open the channel and try Jump to message again.");
-              };
-              const jumpWhenChannelIsReady = (attemptsLeft) => {
-                if (String(currentChannelId() || "") !== String(channelId)) {
-                  if (attemptsLeft > 0) return setTimeout(() => jumpWhenChannelIsReady(attemptsLeft - 1), 160);
-                  toast("The channel did not open in time. Try Jump to message again.");
-                  return;
-                }
-                if (performMessageJump()) jumpWhenMessageIsReady(80);
-              };
-              jumpWhenChannelIsReady(75);
-          }, 220);
-          }, 160);
-        }, 250);
-      }, 250);
-    };
-    // The plugin settings are nested above the profile view. Unwind their
-    // routes first; the modal and profile route are closed afterward.
-    const nav = navigation;
-    let depth = 0;
-    const closeOne = () => {
-      if (!nav || depth++ >= 8) return selectAfterClose();
-      let canGoBack = false;
-      try { canGoBack = typeof nav.canGoBack === "function" && nav.canGoBack(); } catch (_) {}
-      if (canGoBack && typeof nav.goBack === "function") {
-        try { nav.goBack(); } catch (_) {}
-        return setTimeout(closeOne, 120);
-      }
-      try {
-        if (typeof nav.dismiss === "function") nav.dismiss();
-      } catch (_) {}
-      selectAfterClose();
-    };
-    closeOne();
+  function dismissHistoryNavigation(navigation) { let current=navigation,depth=0; while(current&&depth++<8){try{if(current.canGoBack?.()){if(typeof current.popToTop==="function")current.popToTop();else current.goBack?.();}current=current.getParent?.();}catch(_){break;}} }
+  function jumpTo(channelId,guildId,messageId,navigation){
+    if(!channelId||!messageId||String(messageId).startsWith("test-"))return;
+    const jump=(()=>{try{return findByProps("jumpToMessage");}catch(_){return null;}})();
+    const navigate=(()=>{try{return findByProps("transitionToChannel");}catch(_){return null;}})();
+    const perform=()=>{try{if(typeof jump?.jumpToMessage!=="function")throw Error();jump.jumpToMessage({channelId:String(channelId),messageId:String(messageId),flash:true,jumpType:"ANIMATED"});}catch(_){toast("Could not jump to this message");}};
+    try{if(typeof navigate?.transitionToChannel!=="function")throw Error();dismissHistoryNavigation(navigation);navigate.transitionToChannel(String(channelId),{});setTimeout(perform,650);}catch(_){toast("Could not open this channel");}
   }
-
   function ask(title, message, buttons, appendCancel) {
     const ios = RN.Platform && RN.Platform.OS === "ios";
     const list = buttons.slice(0, ios ? 6 : 3);
@@ -868,7 +743,7 @@ const implementation = (() => {
   function showCaptureTest() {
     ask("Message capture test", "Since AML started:\n" + receivedThisSession + " new message events\n" +
       receivedChannelsThisSession.size + " conversations/channels\n" + receivedDMsThisSession + " DM messages\n\n" +
-      "This counts only events delivered to Rain. It cannot show messages from channels Rain did not subscribe to.", [{ text: "OK" }]);
+      "Counts messages delivered by Discord while this plugin is running. Messages the app does not receive cannot be recorded.", [{ text: "OK" }]);
   }
 
   function showDiscordAlert(id, title, content, buttons) {
@@ -1471,7 +1346,7 @@ const implementation = (() => {
     if (renderErrors >= 3 && renderUnpatch) {
       try { renderUnpatch(); } catch (_) {}
       renderUnpatch = null;
-      toast("Advanced Message Logger: message styling disabled after repeated errors");
+      toast("Adv. Message Logger: message styling disabled after repeated errors");
     }
   }
 
@@ -1481,7 +1356,7 @@ const implementation = (() => {
       try { RM = findByName("RowManager", false)?.default; } catch (_) {}
     }
     if (!RM || !RM.prototype || typeof RM.prototype.generate !== "function") {
-      toast("Advanced Message Logger: could not find the message renderer");
+      toast("Adv. Message Logger: could not find the message renderer");
       return null;
     }
     return patcher.after("generate", RM.prototype, (args, ret) => {
@@ -1496,8 +1371,8 @@ const implementation = (() => {
       light = !!ThemeStore && ThemeStore.theme === "light";
     } catch (_) {}
     return light
-      ? { text: "#060607", sub: "#5C5E66", acc: "#5865F2", accPressed: "#4752C4", blurple: "#5865F2", card2: "rgba(0,0,0,0.045)", chip: "rgba(0,0,0,0.07)", press: "rgba(0,0,0,0.06)", divider: "rgba(0,0,0,0.09)", off: "#B5BAC1" }
-      : { text: "#FFFFFF", sub: "#B5BAC1", acc: "#8EA1FF", accPressed: "#788BFF", blurple: "#8EA1FF", card2: "rgba(255,255,255,0.06)", chip: "rgba(255,255,255,0.10)", press: "rgba(255,255,255,0.07)", divider: "rgba(255,255,255,0.09)", off: "#4E5058" };
+      ? { text: "#060607", sub: "#5C5E66", bg: "#FFFFFF", card: "#F2F3F5", acc: "#5865F2", accPressed: "#4752C4", blurple: "#5865F2", card2: "rgba(0,0,0,0.045)", chip: "rgba(0,0,0,0.07)", press: "rgba(0,0,0,0.06)", divider: "rgba(0,0,0,0.09)", off: "#B5BAC1" }
+      : { text: "#FFFFFF", sub: "#B5BAC1", bg: "#1E1F22", card: "#2B2D31", acc: "#8EA1FF", accPressed: "#788BFF", blurple: "#8EA1FF", card2: "rgba(255,255,255,0.06)", chip: "rgba(255,255,255,0.10)", press: "rgba(255,255,255,0.07)", divider: "rgba(255,255,255,0.09)", off: "#4E5058" };
   }
 
   function closeSettingsAlert() {
@@ -1590,7 +1465,7 @@ const implementation = (() => {
     };
     return React.createElement(RN.View, { style: { width: "92%", maxWidth: 440, alignSelf: "center", padding: 18, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
       React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Maximum cached messages"),
-      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "Keeps messages Rain delivers while running. The cache uses an estimated 8 MiB budget and does not download history."),
+      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "Keeps messages Discord delivers while running. The cache uses an estimated 8 MiB budget and does not download history."),
       React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, keyboardType: "number-pad", accessibilityLabel: "Maximum cached messages", style: { minHeight: 48, paddingHorizontal: 14, borderRadius: 14, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
       error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
       React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", marginTop: 18 } },
@@ -1767,12 +1642,20 @@ const implementation = (() => {
     return null;
   }
 
+  function CustomSection(p){const C=palette();return React.createElement(RN.View,{style:{marginBottom:p.compact?14:22}},p.title?React.createElement(RN.Text,{style:{color:C.sub,fontSize:13,fontWeight:"700",letterSpacing:.4,marginHorizontal:5,marginBottom:9,textTransform:"uppercase"}},p.title):null,React.createElement(RN.View,{style:{backgroundColor:C.card,borderRadius:17,overflow:"hidden",borderWidth:1,borderColor:C.card2}},p.children));}
+  function CustomRow(p){const C=palette();return React.createElement(RN.Pressable,{onPress:p.onPress,disabled:!p.onPress,style:({pressed})=>({minHeight:58,paddingHorizontal:15,paddingVertical:12,flexDirection:"row",alignItems:"center",backgroundColor:pressed?C.press:"transparent"})},p.icon?React.createElement(RN.Text,{style:{width:30,fontSize:18,color:C.sub,marginRight:7,textAlign:"center"}},p.icon):null,React.createElement(RN.View,{style:{flex:1,minWidth:0,paddingRight:8}},React.createElement(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:16,fontWeight:"600"}},p.title),p.subtitle?React.createElement(RN.Text,{numberOfLines:2,style:{color:C.sub,fontSize:13,marginTop:3,lineHeight:18}},p.subtitle):null),p.trailing||null,!p.last?React.createElement(RN.View,{style:{position:"absolute",bottom:0,left:p.icon?52:15,right:0,height:1,backgroundColor:C.card2}}):null);}
+  function CustomSwitch(p){const C=palette(),on=!!p.value,pos=React.useRef(new RN.Animated.Value(on?1:0)).current;React.useEffect(()=>{RN.Animated.spring(pos,{toValue:on?1:0,speed:22,bounciness:3,useNativeDriver:true}).start();},[on]);return React.createElement(RN.Pressable,{accessibilityRole:"switch",accessibilityState:{checked:on},onPress:()=>p.onChange(!on),hitSlop:8,style:{width:48,height:29,borderRadius:16,padding:3,justifyContent:"center",backgroundColor:on?C.blurple:C.off}},React.createElement(RN.Animated.View,{style:{width:23,height:23,borderRadius:12,backgroundColor:"#FFFFFF",elevation:1,transform:[{translateX:pos.interpolate({inputRange:[0,1],outputRange:[0,19]})}]}}));}
+  function CustomAction(p){const C=palette(),fill=p.danger?"#ED4245":p.secondary?C.chip:C.blurple;return React.createElement(RN.Pressable,{onPress:p.onPress,disabled:p.disabled,accessibilityRole:"button",style:({pressed})=>({minHeight:48,borderRadius:13,alignItems:"center",justifyContent:"center",paddingHorizontal:16,marginTop:9,backgroundColor:fill,opacity:p.disabled ? 0.45 : pressed ? 0.75 : 1})},React.createElement(RN.Text,{style:{color:p.secondary&&!p.danger?C.text:"#FFFFFF",fontWeight:"700",fontSize:16}},p.title));}
+  function CustomInput(p){const C=palette();return React.createElement(RN.TextInput,{...p,placeholderTextColor:C.sub,style:[{minHeight:48,borderRadius:13,borderWidth:1,borderColor:C.off,backgroundColor:C.bg,color:C.text,paddingHorizontal:14,fontSize:16},p.style]});}
   function Settings() {
     rainStore.useStore();
     const [screen, setScreen] = React.useState("main");
     const [filterReturn, setFilterReturn] = React.useState("deleted");
     const [limit, setLimit] = React.useState(PAGE);
     const [logFilter, setLogFilter] = React.useState({ query: "", from: "", to: "" });
+    const [colorEditor, setColorEditor] = React.useState(null);
+    const [colorDraft, setColorDraft] = React.useState(RED);
+    const [colorError, setColorError] = React.useState("");
     const [, bump] = React.useState(0);
     let settingsNavigation = null;
     try {
@@ -1847,110 +1730,15 @@ const implementation = (() => {
       ]);
     };
 
-    const rowSet = new WeakSet();
-    const mark = (el) => { rowSet.add(el); return el; };
-    const sectionTitles = new WeakMap();
-    const HEXCOLOR = /^#[0-9A-Fa-f]{6}$/;
-    const Text = (props, ...kids) => h(RN.Text, props, ...kids);
-    const rowStyle = ({ pressed }) => ({ paddingHorizontal: 16, paddingVertical: 13, minHeight: 56, flexDirection: "row", alignItems: "center", backgroundColor: pressed ? C.press : "transparent" });
-    const rowText = (label, sub) => h(RN.View, { style: { flex: 1 } },
-      Text({ style: { color: C.text, fontSize: 16, fontWeight: "500" }, numberOfLines: 4 }, label),
-      sub ? Text({ style: { color: C.sub, fontSize: 13, lineHeight: 18, marginTop: 2 }, numberOfLines: 4 }, sub) : null);
-
-    const Section = (title) => {
-      const marker = h(RN.View, { key: "sec-" + title });
-      sectionTitles.set(marker, title);
-      return marker;
-    };
-
-    const valueChip = (right) => {
-      if (!right) return null;
-      if (right === ">" || right === "\u203A") {
-        return F.TableRow && F.TableRow.Arrow ? F.TableRow.Arrow : Text({ style: { color: C.sub, fontSize: 22, marginLeft: 8 } }, "\u203A");
-      }
-      const trailingText = (text) => F.TableRow && F.TableRow.TrailingText
-        ? h(F.TableRow.TrailingText, { text })
-        : Text({ style: { color: C.sub, fontSize: 14, marginLeft: 8 }, numberOfLines: 1 }, text);
-      if (right === "Selected") return trailingText("Selected");
-      if (HEXCOLOR.test(right)) {
-        return h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginLeft: 8 } },
-          h(RN.View, { style: { width: 20, height: 20, borderRadius: 10, backgroundColor: right, borderWidth: 1, borderColor: C.divider } }),
-          trailingText(right));
-      }
-      return trailingText(String(right));
-    };
-
-    const PressRow = (key, label, sub, onPress, right, rightColor) => mark(
-      F && F.TableRow
-        ? h(F.TableRow, { key, label, subLabel: sub, onPress, icon: settingIcon(key, label), trailing: valueChip(right, rightColor) })
-        : F && F.FormRow
-        ? h(F.FormRow, { key, label, subLabel: sub, onPress, leading: settingIcon(key, label), trailing: valueChip(right, rightColor) })
-        : h(RN.Pressable, { key, onPress, accessibilityRole: "button", style: rowStyle },
-          rowText(label, sub), valueChip(right, rightColor)));
-
-    const switchRow = (key, label, sub, value, change) => mark(
-      F && F.TableSwitchRow
-        ? h(F.TableSwitchRow, { key, label, subLabel: sub, icon: settingIcon(key, label), value, onValueChange: change })
-        : F && F.FormSwitch && F.FormRow
-        ? h(F.FormRow, { key, label, subLabel: sub, leading: settingIcon(key, label), trailing: h(F.FormSwitch, { value, onValueChange: change }) })
-        : F && F.FormSwitchRow
-        ? h(F.FormSwitchRow, { key, label, subLabel: sub, leading: settingIcon(key, label), value, onValueChange: change })
-        : h(RN.Pressable, { key, onPress: () => change(!value), accessibilityRole: "button", style: rowStyle },
-          h(RN.View, { style: { flex: 1, paddingRight: 12 } },
-            Text({ style: { color: C.text, fontSize: 16, fontWeight: "500" } }, label),
-            sub ? Text({ style: { color: C.sub, fontSize: 13, lineHeight: 18, marginTop: 2 } }, sub) : null),
-          h(RN.Switch, { value, onValueChange: change, trackColor: { false: C.off, true: C.blurple }, thumbColor: "#FFFFFF", ios_backgroundColor: C.off })));
-
-    const Btn = (key, title, onPress, color) => {
-      const label = key === "back" ? "‹  Back" : title;
-      if (F.TableRow) return mark(h(F.TableRow, { key, label, icon: settingIcon(key, label), onPress }));
-      if (F.FormRow) return mark(h(F.FormRow, { key, label, leading: settingIcon(key, label), onPress }));
-      return mark(h(RN.Pressable, { key, onPress, accessibilityRole: "button", style: rowStyle }, rowText(label, null)));
-    };
-
-    const Empty = (key, text) => Text({ key, style: { color: C.sub, fontSize: 14, lineHeight: 20, paddingHorizontal: 16, paddingVertical: 12 } }, text);
-
-    const Title = (key, text) => Text({ key, style: { color: C.text, fontSize: 20, fontWeight: "700", paddingHorizontal: 16, paddingTop: 12, paddingBottom: 6 } }, text);
-
-    // Render settings groups with Rain's native table row components.
-    const compose = (list) => {
-      const out = [];
-      let run = [];
-      let title = null;
-      let groupIndex = 0;
-      const sectionHeader = (name) => h(RN.View, { key: "sec-title-" + groupIndex++, style: { paddingHorizontal: 30, paddingTop: 24, paddingBottom: 12 } },
-        Text({ style: { color: C.sub, fontSize: 18, fontWeight: "400" } }, name));
-      const flush = () => {
-        if (!run.length) {
-          if (title) out.push(sectionHeader(title));
-          title = null;
-          return;
-        }
-        const sectionRows = [];
-        run.forEach((row, index) => {
-          if (index) sectionRows.push(F.FormDivider
-            ? h(F.FormDivider, { key: "row-divider-" + groupIndex++ })
-            : h(RN.View, { key: "row-divider-" + groupIndex++, style: { height: 1, marginLeft: 28, backgroundColor: C.divider } }));
-          sectionRows.push(row);
-        });
-        if (title && F.TableRowGroup) out.push(h(F.TableRowGroup, { key: "settings-section-" + groupIndex++, title }, ...run));
-        else if (title && F.FormSection) out.push(h(F.FormSection, { key: "settings-section-" + groupIndex++, title }, ...sectionRows));
-        else {
-          if (title) out.push(sectionHeader(title));
-          out.push(...sectionRows);
-        }
-        run = [];
-        title = null;
-      };
-      for (const el of list) {
-        if (el && sectionTitles.has(el)) { flush(); title = sectionTitles.get(el); }
-        else if (el && rowSet.has(el)) run.push(el);
-        else { flush(); if (el) out.push(el); }
-      }
-      flush();
-      return out;
-    };
-
+    const rowSet=new WeakSet(),sectionTitles=new WeakMap(),mark=(el)=>{rowSet.add(el);return el;},HEXCOLOR=/^#[0-9A-Fa-f]{6}$/;
+    const Text=(props,...kids)=>h(RN.Text,props,...kids),rowIcon=(key)=>/color/.test(key)?"\u25C9":/capture|cache|message|history|nav|log/.test(key)?"\u25F7":/filter|search/.test(key)?"\u2315":/ignore/.test(key)?"\u2298":"\u2726";
+    const Section=(title)=>{const m=h(RN.View,{key:"sec-"+title});sectionTitles.set(m,title);return m;};
+    const valueChip=(r)=>{if(!r)return null;if(r===">"||r==="\u203A")return Text({style:{color:C.sub,fontSize:21,marginLeft:7}},"\u203A");const v=String(r);if(HEXCOLOR.test(v))return h(RN.View,{style:{flexDirection:"row",alignItems:"center",marginLeft:8}},h(RN.View,{style:{width:18,height:18,borderRadius:9,backgroundColor:v,borderWidth:1,borderColor:C.divider}}),Text({style:{color:C.sub,fontSize:13,marginLeft:8}},v));return Text({style:{color:C.sub,fontSize:14,marginLeft:8},numberOfLines:1},v);};
+    const PressRow=(key,label,sub,onPress,right)=>mark(h(CustomRow,{key,title:label,subtitle:sub,icon:rowIcon(key),onPress,trailing:valueChip(right)}));
+    const switchRow=(key,label,sub,value,change)=>mark(h(CustomRow,{key,title:label,subtitle:sub,trailing:h(CustomSwitch,{value,onChange:change})}));
+    const Btn=(key,title,onPress,color)=>mark(h(CustomAction,{key,title:key==="back"?"\u2039  Back":title,onPress,secondary:key!=="clear"&&key!=="test",danger:color===RED}));
+    const Empty=(key,t)=>Text({key,style:{color:C.sub,fontSize:14,lineHeight:20,paddingHorizontal:14,paddingVertical:14,textAlign:"center"}},t),Title=(key,t)=>Text({key,style:{color:C.text,fontSize:22,fontWeight:"800",paddingTop:8,paddingBottom:8}},t);
+    const compose=(list)=>{const out=[];let run=[],title=null,n=0;const flush=()=>{if(!run.length){if(title)out.push(h(CustomSection,{key:"section-"+n++,title}));title=null;return;}const rows=run.map((r,i)=>React.cloneElement(r,{last:i===run.length-1}));out.push(h(CustomSection,{key:"section-"+n++,title},...rows));run=[];title=null;};for(const el of list){if(el&&sectionTitles.has(el)){flush();title=sectionTitles.get(el);}else if(el&&rowSet.has(el))run.push(el);else{flush();if(el)out.push(el);}}flush();return out;};
     const Switch = (key, label, sub, onChange) => {
       const value = !!cfg()[key];
       const change = onChange || ((v) => { cfg()[key] = v; refreshUI(); });
@@ -1981,7 +1769,7 @@ const implementation = (() => {
     const retentionLabel = () => (cfg().retentionDays === 7 ? "7 days" : cfg().retentionDays === 30 ? "30 days" : "Forever");
     const captureModeLabel = () => cfg().captureMode === "expanded" ? "All received events" : "Loaded Only";
     const captureModeDescription = () => cfg().captureMode === "expanded"
-      ? "Remembers new messages Rain delivers, even outside the open chat. It cannot make Rain receive events for unsubscribed channels."
+      ? "Keeps new messages received outside the open chat. Only messages delivered by Discord can be recorded."
       : "Lowest resource use; check only messages already loaded by Discord";
     const cycleCaptureMode = () => {
       cfg().captureMode = cfg().captureMode === "expanded" ? "loaded" : "expanded";
@@ -2001,20 +1789,10 @@ const implementation = (() => {
         refreshUI();
       };
       try {
-        openNativeInputAlert({ id: "aml-cache-limit", title: "Maximum cached messages", content: "Messages Rain delivers only · approx. 8 MiB cache budget", initialValue: rawBufferLimit(), keyboardType: "number-pad", onSave: saveLimit });
+        openNativeInputAlert({ id: "aml-cache-limit", title: "Maximum cached messages", content: "Messages received by Discord · approx. 8 MiB cache budget", initialValue: rawBufferLimit(), keyboardType: "number-pad", onSave: saveLimit });
       } catch (_) { toast("Could not open cache limit settings"); }
     };
-    const editColor = (key, title, defaultValue) => {
-      const saveColor = (value) => { cfg()[key] = value; refreshStyledMessages(); refreshUI(); };
-      try {
-        openNativeColorAlert({
-          title,
-          initialValue: colorValue(key, defaultValue),
-          defaultValue,
-          onSave: saveColor,
-        });
-      } catch (_) { toast("Could not open color settings"); }
-    };
+    const editColor=(key,title,defaultValue)=>{setColorEditor({key,title,defaultValue});setColorDraft(colorValue(key,defaultValue));setColorError("");setScreen("color");};
     const cycleRetention = () => {
       const cur = cfg().retentionDays || 0;
       cfg().retentionDays = cur === 0 ? 7 : cur === 7 ? 30 : 0;
@@ -2100,20 +1878,18 @@ const implementation = (() => {
     };
 
     let content;
-    if (screen === "filters") {
+    if(screen==="color"&&colorEditor){
+      const presets=[["Red","#ED4245"],["Orange","#F07B3E"],["Gold","#F1C40F"],["Green","#43B581"],["Teal","#1ABC9C"],["Blue","#3498DB"],["Indigo","#5865F2"],["Purple","#9B59B6"],["Pink","#EB459E"],["Gray","#80848E"]];
+      const applyColor=(v)=>{cfg()[colorEditor.key]=v;refreshStyledMessages();setColorEditor(null);setScreen("main");refreshUI();};
+      content=[Btn("back","Back",()=>{setColorEditor(null);setScreen("main");}),Title("color-title",colorEditor.title),Section("Preview"),PressRow("color-preview","Example message","Preview of the selected color",null,colorDraft),Section("Color presets"),...presets.map(([label,hex])=>PressRow("color-"+hex,label,hex,()=>{setColorDraft(hex);setColorError("");},hex)),Section("Custom HEX"),mark(h(RN.View,{key:"color-input",style:{padding:14}},h(RN.Text,{style:{color:C.sub,fontSize:13,marginBottom:8}},"Enter a HEX value such as #3366FF"),h(CustomInput,{value:colorDraft,onChangeText:(v)=>{setColorDraft(v);setColorError("");},autoCapitalize:"characters",autoCorrect:false,accessibilityLabel:"HEX color"}),colorError?h(RN.Text,{style:{color:RED,fontSize:13,marginTop:8}},colorError):null)),Section("Actions"),Btn("default-color","Use default",()=>applyColor(colorEditor.defaultValue)),Btn("save-color","Save color",()=>{const v=String(colorDraft).trim().toUpperCase();if(!HEXCOLOR.test(v)){setColorError("Enter a valid HEX color, for example #3366FF.");refreshUI();return;}applyColor(v);})];
+    } else if (screen === "filters") {
       const saved = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [];
       const updateFilter = (key, value) => setLogFilter((current) => ({ ...current, [key]: value }));
       content = [Btn("back", "< Back", () => { setScreen(filterReturn); refreshUI(); }), Section("Search logs")];
-      if (F.FormInput) {
-        const inputText = (value) => typeof value === "string" ? value : value && typeof value.text === "string" ? value.text : "";
-        content.push(mark(h(F.FormInput, { key: "filter-query", title: "USER, CHANNEL OR MESSAGE", placeholder: "Search logged messages", value: logFilter.query, onChange: (value) => updateFilter("query", inputText(value)) })));
-        content.push(mark(h(F.FormInput, { key: "filter-from", title: "FROM DATE", placeholder: "YYYY-MM-DD", value: logFilter.from, onChange: (value) => updateFilter("from", inputText(value)) })));
-        content.push(mark(h(F.FormInput, { key: "filter-to", title: "TO DATE", placeholder: "YYYY-MM-DD", value: logFilter.to, onChange: (value) => updateFilter("to", inputText(value)) })));
-      } else {
-        ["query", "from", "to"].forEach((key) => content.push(PressRow("filter-" + key, key === "query" ? "User, channel or message" : key === "from" ? "From date" : "To date", logFilter[key] || "Not set", () => {
-          openNativeInputAlert({ id: "aml-filter-field-" + key, title: "Search logs", content: key === "query" ? "User, channel or message" : "Date (YYYY-MM-DD)", initialValue: logFilter[key] || "", onSave: (value) => updateFilter(key, value) });
-        })));
-      }
+      const filterFields = [["query", "User, channel or message", "Search logged messages"], ["from", "From date", "YYYY-MM-DD"], ["to", "To date", "YYYY-MM-DD"]];
+      filterFields.forEach(([key, label, placeholder]) => content.push(mark(h(RN.View, { key: "filter-" + key, style: { paddingHorizontal: 14, paddingVertical: 9 } },
+        h(RN.Text, { style: { color: C.sub, fontSize: 12, fontWeight: "700", marginBottom: 7 } }, label),
+        h(CustomInput, { value: logFilter[key], placeholder, onChangeText: (value) => updateFilter(key, value), autoCorrect: false, autoCapitalize: "none" })))));
       content.push(Section("Actions"), PressRow("filter-clear", "Clear search", "Remove all search terms and dates", () => { setLogFilter({ query: "", from: "", to: "" }); refreshUI(); }),
         PressRow("filter-save", "Save current filter", "Save this search for later", saveCurrentLogFilter),
         PressRow("filter-apply", "Apply and return", "Show matching messages", () => { setLimit(PAGE); setScreen(filterReturn); refreshUI(); }), Section("Saved filters"));
@@ -2138,13 +1914,13 @@ const implementation = (() => {
         Switch("notifyEdited", "Notify about edited messages", "Show a Jump to message alert for edited DMs only"),
         Section("Message capture"),
         PressRow("capture-mode", "Capture mode", captureModeDescription(), cycleCaptureMode, captureModeLabel()),
-        Switch("rememberReceivedMessages", "Remember new messages", "Save new messages Rain delivers on this device across restarts (up to the cache limit and approx. 8 MiB).", (v) => {
+        Switch("rememberReceivedMessages", "Remember new messages", "Save new messages received by Discord on this device across restarts.", (v) => {
           cfg().rememberReceivedMessages = v;
           if (!v) { rawArchiveIds.clear(); cfg().receivedMessages = []; rawArchiveDirty = false; if (rawArchiveTimer) { clearTimeout(rawArchiveTimer); rawArchiveTimer = null; } }
           else scheduleRawArchiveSave();
           refreshUI();
         }),
-        PressRow("test-capture", "Test message capture", "Count new events Rain delivered since AML started", showCaptureTest, ">"),
+        PressRow("test-capture", "Test message capture", "Count new message events since this plugin started", showCaptureTest, ">"),
         PressRow("cache-limit", "Maximum cached messages", "Delivered messages only · capped memory cache", editRawBufferLimit, String(rawBufferLimit())),
         Section("Display"),
         PressRow("deleted-color", "Deleted message color", "Text and highlight color", () => editColor("deletedMessageColor", "Deleted message color", RED), colorValue("deletedMessageColor", RED)),
@@ -2170,8 +1946,9 @@ const implementation = (() => {
       ];
     }
 
-    const buildLabel = Text({ key: "build", style: { color: C.sub, fontSize: 13, paddingHorizontal: 4, paddingBottom: 4 } }, "Build " + BUILD);
-    return h(RN.ScrollView, { key: screen, contentContainerStyle: { paddingHorizontal: 12, paddingTop: 20, paddingBottom: 24 } }, buildLabel, ...compose(content));
+    const buildLabel = Text({ key: "build", style: { color: C.sub, fontSize: 12, paddingHorizontal: 4, paddingBottom: 4 } }, "Build " + BUILD);
+    const header = screen === "main" ? [Text({ key: "header-title", style: { color: C.text, fontSize: 25, fontWeight: "800", marginBottom: 5 } }, "Adv. Message Logger"), Text({ key: "header-subtitle", style: { color: C.sub, fontSize: 14, marginBottom: 20 } }, "Message history and capture preferences")] : [];
+    return h(RN.ScrollView, { key: screen, style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 42 } }, ...header, buildLabel, ...compose(content));
   }
 
   function onLoad() {
@@ -2201,7 +1978,7 @@ const implementation = (() => {
     if (!s.ignored) s.ignored = { channels: {}, guilds: {}, users: {} };
     renderErrors = 0;
 
-    if (!loadStores()) { toast("Advanced Message Logger: required Discord modules not found"); return; }
+    if (!loadStores()) { toast("Adv. Message Logger: required Discord modules not found"); return; }
     clearRawBuffer();
     restoreRawArchive();
     if (s.pings) s.pings = undefined;
@@ -2266,7 +2043,7 @@ const implementation = (() => {
   return { onLoad, onUnload, settings: Settings };
 })();
 
-// @ts-ignore Rain evaluates this file as a CommonJS plugin entry.
+// @ts-ignore Discord evaluates this file as a CommonJS plugin entry.
 module.exports = {
   start() { implementation.onLoad(); },
   stop() { implementation.onUnload(); },

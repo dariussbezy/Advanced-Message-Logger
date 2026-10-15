@@ -1845,7 +1845,7 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
 
     let content;
     if(screen==="color"&&colorEditor){
-      const presets=[["Default",colorEditor.defaultValue],["Red","#ED4245"],["Orange","#F07B3E"],["Gold","#F1C40F"],["Green","#43B581"],["Teal","#1ABC9C"],["Blue","#3498DB"],["Indigo","#5865F2"],["Purple","#9B59B6"],["Pink","#EB459E"],["Gray","#80848E"]];
+      const presets=[["Default",colorEditor.defaultValue],["Orange","#F07B3E"],["Gold","#F1C40F"],["Green","#43B581"],["Teal","#1ABC9C"],["Blue","#3498DB"],["Indigo","#5865F2"],["Purple","#9B59B6"],["Pink","#EB459E"],["Gray","#80848E"]];
       const current=colorValue(colorEditor.key,colorEditor.defaultValue);
       const applyColor=(v)=>{cfg()[colorEditor.key]=v;refreshStyledMessages();setColorEditor(null);setScreen("main");refreshUI();};
       content=[

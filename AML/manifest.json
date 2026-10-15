@@ -1,8 +1,8 @@
 {
   "id": "aml",
   "name": "Adv. Message Logger",
-  "description": "Capture incoming messages, remember recent messages across restarts, and log edits or deletions. Check plugin settings.",
-  "version": "1.0.2",
+  "description": "Capture incoming messages, remember recent messages across restarts, and log edits or deletions. Check the plugin settings!",
+  "version": "1.0.0",
   "authors": [
     "dariussbezy"
   ],

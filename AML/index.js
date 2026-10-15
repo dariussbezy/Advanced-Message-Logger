@@ -23,7 +23,7 @@ const implementation = (() => {
   const MAX_RAW_SIZE = 20000;
   const MAX_RAW_CACHE_BYTES = 8 * 1024 * 1024;
   const RAW_ARCHIVE_SAVE_DELAY = 30000;
-  const BUILD = "v1.0.2";
+  const BUILD = "v1.0.0";
   const SAVE_DELAY = 4000;
   const PAGE = 40;
   const DAY = 86400000;
@@ -1346,7 +1346,7 @@ const implementation = (() => {
     if (renderErrors >= 3 && renderUnpatch) {
       try { renderUnpatch(); } catch (_) {}
       renderUnpatch = null;
-      toast("Adv. Message Logger: message styling disabled after repeated errors");
+      toast("Advanced Message Logger: message styling disabled after repeated errors");
     }
   }
 
@@ -1356,7 +1356,7 @@ const implementation = (() => {
       try { RM = findByName("RowManager", false)?.default; } catch (_) {}
     }
     if (!RM || !RM.prototype || typeof RM.prototype.generate !== "function") {
-      toast("Adv. Message Logger: could not find the message renderer");
+      toast("Advanced Message Logger: could not find the message renderer");
       return null;
     }
     return patcher.after("generate", RM.prototype, (args, ret) => {
@@ -1658,8 +1658,8 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
     const rowSet=new WeakSet(),sectionTitles=new WeakMap(),mark=(el)=>{rowSet.add(el);return el;},HEXCOLOR=/^#[0-9A-Fa-f]{6}$/;
     const Text=(props,...kids)=>h(RN.Text,props,...kids),rowIcon=(key)=>/color/.test(key)?"\u25C9":/capture|cache|message|history|nav|log/.test(key)?"\u25F7":/filter|search/.test(key)?"\u2315":/ignore/.test(key)?"\u2298":"\u2726";
     const Section=(title)=>{const m=h(RN.View,{key:"sec-"+title});sectionTitles.set(m,title);return m;};
-    const valueChip=(r)=>{if(!r)return null;if(r===">"||r==="\u203A")return Text({style:{color:C.sub,fontSize:21,marginLeft:7}},"\u203A");const v=String(r);if(HEXCOLOR.test(v))return h(RN.View,{style:{flexDirection:"row",alignItems:"center",marginLeft:8}},h(RN.View,{style:{width:18,height:18,borderRadius:9,backgroundColor:v,borderWidth:1,borderColor:C.divider}}),Text({style:{color:C.sub,fontSize:13,marginLeft:8}},v));return Text({style:{color:C.sub,fontSize:14,marginLeft:8},numberOfLines:1},v);};
-    const PressRow=(key,label,sub,onPress,right)=>mark(h(CustomRow,{key,title:label,subtitle:sub,onPress,trailing:key==="capture-mode"?h(RN.View,{style:{flexDirection:"row",alignItems:"center",backgroundColor:C.chip,borderRadius:10,borderWidth:1,borderColor:C.blurple,paddingHorizontal:9,paddingVertical:6,marginLeft:6}},h(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:12,fontWeight:"700",maxWidth:120}},String(right||"Select")),h(RN.Text,{style:{color:C.blurple,fontSize:16,fontWeight:"800",marginLeft:5}},"⌄")):valueChip(right)}));
+    const valueChip=(r)=>{if(!r)return null;if(r===">"||r==="\u203A")return Text({style:{color:C.sub,fontSize:21,marginLeft:7}},"\u203A");const v=String(r);if(HEXCOLOR.test(v))return h(RN.View,{style:{flexDirection:"row",alignItems:"center",marginLeft:8}},h(RN.View,{style:{width:20,height:20,borderRadius:10,backgroundColor:v,borderWidth:1,borderColor:C.divider}}));return Text({style:{color:C.sub,fontSize:14,marginLeft:8},numberOfLines:1},v);};
+    const PressRow=(key,label,sub,onPress,right)=>mark(h(CustomRow,{key,title:label,subtitle:sub,onPress,trailing:(key==="capture-mode"||key==="retention")?h(RN.View,{style:{flexDirection:"row",alignItems:"center",backgroundColor:C.chip,borderRadius:10,borderWidth:1,borderColor:C.blurple,paddingHorizontal:9,paddingVertical:6,marginLeft:6}},h(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:12,fontWeight:"700",maxWidth:120}},String(right||"Select")),h(RN.Text,{style:{color:C.blurple,fontSize:16,fontWeight:"800",marginLeft:5}},"⌄")):valueChip(right)}));
     const switchRow=(key,label,sub,value,change)=>mark(h(CustomRow,{key,title:label,subtitle:sub,trailing:h(CustomSwitch,{value,onChange:change})}));
     const Btn=(key,title,onPress,color)=>mark(h(CustomAction,{key,title:key==="back"?"\u2039  Back":title,onPress,secondary:key!=="clear"&&key!=="test",danger:color===RED}));
     const Empty=(key,t)=>Text({key,style:{color:C.sub,fontSize:14,lineHeight:20,paddingHorizontal:14,paddingVertical:14,textAlign:"center"}},t),Title=(key,t)=>Text({key,style:{color:C.text,fontSize:22,fontWeight:"800",paddingTop:8,paddingBottom:8}},t);
@@ -1692,7 +1692,7 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
     };
 
     const retentionLabel = () => (cfg().retentionDays === 7 ? "7 days" : cfg().retentionDays === 30 ? "30 days" : "Forever");
-    const captureModeLabel = () => cfg().captureMode === "expanded" ? "All new messages" : "Loaded messages";
+    const captureModeLabel = () => cfg().captureMode === "expanded" ? "All" : "Loaded";
     const captureModeDescription = () => cfg().captureMode === "expanded"
       ? "Captures messages delivered outside the open chat."
       : "Captures messages loaded in the open chat.";
@@ -1738,11 +1738,32 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
       } catch (_) { toast("Could not open cache limit settings"); }
     };
     const editColor=(key,title,defaultValue)=>{setColorEditor({key,title,defaultValue});setScreen("color");};
-    const cycleRetention = () => {
-      const cur = cfg().retentionDays || 0;
-      cfg().retentionDays = cur === 0 ? 7 : cur === 7 ? 30 : 0;
+    const chooseRetention = (days) => {
+      cfg().retentionDays = days;
       if (purge()) markDirty();
       refreshUI();
+    };
+    const openRetentionMenu = () => {
+      const select = (days) => {
+        chooseRetention(days);
+        try { const hide = findByProps("openLazy", "hideActionSheet"); hide && hide.hideActionSheet && hide.hideActionSheet(); } catch (_) {}
+      };
+      try {
+        const sheets = findByProps("showSimpleActionSheet");
+        if (sheets && typeof sheets.showSimpleActionSheet === "function") {
+          sheets.showSimpleActionSheet({ key: "aml-retention-selector", header: { title: "Keep saved messages for" }, options: [
+            { label: "Forever", isMarked: !cfg().retentionDays, onPress: () => select(0) },
+            { label: "7 days", isMarked: cfg().retentionDays === 7, onPress: () => select(7) },
+            { label: "30 days", isMarked: cfg().retentionDays === 30, onPress: () => select(30) }
+          ] });
+          return;
+        }
+      } catch (_) {}
+      ask("Keep saved messages for", "Choose how long saved logs are kept.", [
+        { text: "Forever", onPress: () => select(0) },
+        { text: "7 days", onPress: () => select(7) },
+        { text: "30 days", onPress: () => select(30) }
+      ]);
     };
 
     const snippet = (t) => clip(t, 200) || "(no text)";
@@ -1830,8 +1851,8 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
       content=[
         Text({key:"color-title",style:{color:C.text,fontSize:20,fontWeight:"700",marginBottom:6}},colorEditor.title),
         Text({key:"color-help",style:{color:C.sub,fontSize:14,marginBottom:8}},"Choose a color preset. Your choice saves automatically."),
-        Text({key:"color-current",style:{color:C.sub,fontSize:13,marginBottom:16}},"Current color: "+current),
-        h(CustomSection,{key:"color-presets",title:"Color presets"},...presets.map(([label,hex],index)=>h(CustomRow,{key:"color-"+hex,title:label,subtitle:hex,last:index===presets.length-1,trailing:h(RN.View,{style:{flexDirection:"row",alignItems:"center",gap:10,marginRight:6}},h(RN.View,{style:{width:20,height:20,borderRadius:10,backgroundColor:hex}}),current===hex?h(RN.Text,{style:{color:C.blurple,fontWeight:"800",width:18,textAlign:"center"}},"✓"):h(RN.View,{style:{width:18}})),onPress:()=>applyColor(hex)}))),
+
+        h(CustomSection,{key:"color-presets",title:"Color presets"},...presets.map(([label,hex],index)=>h(CustomRow,{key:"color-"+hex,title:label,last:index===presets.length-1,trailing:h(RN.View,{style:{flexDirection:"row",alignItems:"center",gap:10,marginRight:6}},h(RN.View,{style:{width:20,height:20,borderRadius:10,backgroundColor:hex}}),current===hex?h(RN.Text,{style:{color:C.blurple,fontWeight:"800",width:18,textAlign:"center"}},"✓"):h(RN.View,{style:{width:18}})),onPress:()=>applyColor(hex)}))),
         h(CustomAction,{key:"color-default",title:"Use default",secondary:true,onPress:()=>applyColor(colorEditor.defaultValue)})
       ];
     } else if (screen === "filters") {
@@ -1865,7 +1886,7 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
         Switch("notifyDeleted", "Notify about deleted messages", "Show a Jump to message alert for deleted DMs only"),
         Switch("notifyEdited", "Notify about edited messages", "Show a Jump to message alert for edited DMs only"),
         Section("Message capture"),
-        PressRow("capture-mode", "Capture mode", captureModeDescription(), openCaptureModeMenu, captureModeLabel()),
+        PressRow("capture-mode", "Capture mode", "", openCaptureModeMenu, captureModeLabel()),
         Switch("rememberReceivedMessages", "Remember new messages", "Save new messages received by Discord on this device across restarts.", (v) => {
           cfg().rememberReceivedMessages = v;
           if (!v) { rawArchiveIds.clear(); cfg().receivedMessages = []; rawArchiveDirty = false; if (rawArchiveTimer) { clearTimeout(rawArchiveTimer); rawArchiveTimer = null; } }
@@ -1885,11 +1906,11 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
         Switch("skipOwn", "Ignore my messages", "Your own deletes and edits behave normally"),
         Switch("skipBots", "Ignore bots", "Less noise in busy bot channels"),
         Section("Storage"),
-        PressRow("retention", "Keep saved messages for", "Older logs are removed automatically", cycleRetention, retentionLabel()),
+        PressRow("retention", "Keep saved messages for", "Older logs are removed automatically", openRetentionMenu, retentionLabel()),
         Section("Logs"),
         PressRow("nav-deleted", "Deleted messages", deleted.size + " logged", () => go("deleted"), ">"),
         PressRow("nav-edited", "Edited messages", edits.size + " logged", () => go("edited"), ">"),
-        PressRow("nav-ignored", "Ignored servers, channels and users", ignoredCount + " ignored", () => go("ignored"), ">"),
+        PressRow("nav-ignored", "Ignored items", ignoredCount + " ignored", () => go("ignored"), ">"),
         Btn("clear", "Clear all logged messages", () => {
           ask("Clear all logged messages?", "This removes every stored deleted and edited message, including the ones saved on this device.", [
             { text: "Clear", style: "destructive", onPress: () => { clearAll(); refreshUI(); } },
@@ -1898,9 +1919,10 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
       ];
     }
 
-    const buildLabel = Text({ key: "build", style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Adv. Message Logger " + BUILD);
-    const header = screen === "main" ? [Text({ key: "header-title", style: { color: C.text, fontSize: 25, fontWeight: "800", marginBottom: 5 } }, "Adv. Message Logger"), Text({ key: "header-subtitle", style: { color: C.sub, fontSize: 14, marginBottom: 20 } }, "Message history and capture preferences")] : [];
-    return h(RN.Animated.View, { style: { flex: 1, opacity: screenProgress, transform: [{ translateY: screenProgress.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }] } }, h(RN.ScrollView, { key: screen, style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 42 } }, ...header, ...compose(content), buildLabel));
+    const helpFooter = screen === "main" ? h(RN.View, { key: "settings-guide", style: { marginTop: 16, marginBottom: 10, padding: 13, borderRadius: 15, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2 } }, Text({ style: { color: C.text, fontSize: 14, fontWeight: "700", marginBottom: 5 } }, "Quick guide"), Text({ style: { color: C.sub, fontSize: 12, lineHeight: 17 } }, "Save new messages locally when Remember new messages is on."), Text({ style: { color: C.sub, fontSize: 12, lineHeight: 17, marginTop: 3 } }, "Deleted and edited messages can be filtered and kept for your chosen period.")) : null;
+    const buildLabel = Text({ key: "build", style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Advanced Message Logger " + BUILD);
+    const header = screen === "main" ? [Text({ key: "header-title", style: { color: C.text, fontSize: 25, fontWeight: "800", marginBottom: 5 } }, "Advanced Message Logger"), Text({ key: "header-subtitle", style: { color: C.sub, fontSize: 14, marginBottom: 20 } }, "Message history and capture preferences")] : [];
+    return h(RN.Animated.View, { style: { flex: 1, opacity: screenProgress, transform: [{ translateY: screenProgress.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }] } }, h(RN.ScrollView, { key: screen, style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 42 } }, ...header, ...compose(content), helpFooter, buildLabel));
   }
 
   function onLoad() {
@@ -1930,7 +1952,7 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
     if (!s.ignored) s.ignored = { channels: {}, guilds: {}, users: {} };
     renderErrors = 0;
 
-    if (!loadStores()) { toast("Adv. Message Logger: required Discord modules not found"); return; }
+    if (!loadStores()) { toast("Advanced Message Logger: required Discord modules not found"); return; }
     clearRawBuffer();
     restoreRawArchive();
     if (s.pings) s.pings = undefined;
@@ -1943,6 +1965,7 @@ function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||setti
       gplBridge = {
         active: true,
         getKnownMessage: (channelId, id) => getKnownMessage(channelId, id),
+        ownsRecentCache: () => cfg().captureMode === "expanded",
         shouldRetainDelete: (message, channelId, guildId) => !!cfg().logDeleted && !shouldSkip(message, channelId, guildId),
         ownsDeletedMessage: (id) => deleted.has(String(id)),
         ownsEditedMessage: (id) => edits.has(String(id)),

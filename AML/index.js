@@ -48,6 +48,12 @@ const implementation = (() => {
   let rawArchiveTimer = null;
   const allowDelete = new Map();
   const unpatches = [];
+  const pendingTimers = new Set();
+  function later(fn, ms) {
+    const id = setTimeout(() => { pendingTimers.delete(id); fn(); }, ms);
+    pendingTimers.add(id);
+    return id;
+  }
   let ActionSheet;
   let ActionSheetRowIconComponent;
   let MessageStore;
@@ -314,6 +320,7 @@ const implementation = (() => {
     schedule();
   }
 
+  let flushFailures = 0;
   function flush() {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     if (!dirty) return;
@@ -333,8 +340,12 @@ const implementation = (() => {
         const ed = {};
         for (const [id, en] of edits) ed[id] = en;
         cfg().saved = { v: 2, deleted: del, edits: ed };
+        flushFailures = 0;
       }
-    } catch (_) {}
+    } catch (_) {
+      dirty = true;
+      if (++flushFailures <= 3) schedule();
+    }
   }
 
   function loadSaved() {
@@ -478,7 +489,7 @@ const implementation = (() => {
   }
 
   function refreshToggle(msg, channelId, id, guildId) {
-    setTimeout(() => {
+    later(() => {
       try {
         FluxDispatcher.dispatch({
           type: "MESSAGE_UPDATE",
@@ -1372,48 +1383,13 @@ const implementation = (() => {
       : { text: "#FFFFFF", sub: "#B5BAC1", bg: "#1E1F22", card: "#2B2D31", acc: "#5865F2", accPressed: "#4752C4", blurple: "#5865F2", card2: "rgba(255,255,255,0.06)", chip: "rgba(255,255,255,0.10)", press: "rgba(255,255,255,0.07)", divider: "rgba(255,255,255,0.09)", off: "#4E5058" };
 }
 
-  function closeSettingsAlert() {
-    try {
-      const alerts = findByProps("openLazy", "close");
-      if (alerts && typeof alerts.close === "function") alerts.close();
-    } catch (_) {}
-  }
-
   function dismissDmMessageAlert(entry, jump) {
     dmAlertShowing = false;
     if (jump && entry && entry.c && entry.id) {
-      setTimeout(() => jumpTo(entry.c, entry.g, entry.id, null), 180);
+      later(() => jumpTo(entry.c, entry.g, entry.id, null), 180);
     }
     const nextDelay = jump ? 2400 : 180;
-    setTimeout(showNextDmMessageAlert, nextDelay);
-  }
-
-  function DmMessageAlert(props) {
-    const entry = props.entry || {};
-    const colors = palette();
-    const dark = colors.text === "#FFFFFF";
-    const h = React.createElement;
-    const close = () => dismissDmMessageAlert(entry, false);
-    const jump = () => dismissDmMessageAlert(entry, true);
-    const deletedMessage = entry.kind === "deleted";
-    const title = deletedMessage ? "MESSAGE DELETED" : "MESSAGE EDITED";
-    const verb = deletedMessage ? "deleted a message in your DM" : "edited a message in your DM";
-    const btn = (label, onPress, primary) => h(RN.Pressable, {
-      key: label, onPress, accessibilityRole: "button",
-      style: ({ pressed }) => ({ flex: 1, minHeight: 48, borderRadius: 14, alignItems: "center", justifyContent: "center", marginLeft: primary ? 10 : 0, backgroundColor: primary ? (pressed ? colors.accPressed : colors.acc) : (pressed ? "rgba(128,128,128,0.32)" : "rgba(128,128,128,0.22)") }),
-    }, h(RN.Text, { style: { color: primary ? "#FFFFFF" : colors.text, fontSize: 15, fontWeight: "700" } }, label));
-    return h(RN.View, { style: { width: "92%", maxWidth: 440, alignSelf: "center", padding: 22, borderRadius: 22, backgroundColor: dark ? "#2B2D31" : "#FFFFFF" } },
-      h(RN.View, { style: { flexDirection: "row", alignItems: "center" } },
-        h(RN.View, { style: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(237,66,69,0.16)" } },
-          h(RN.Text, { style: { fontSize: 24 } }, deletedMessage ? "\uD83D\uDDD1\uFE0F" : "\u270F\uFE0F")),
-        h(RN.View, { style: { flex: 1, marginLeft: 14 } },
-          h(RN.Text, { style: { color: RED, fontSize: 12, fontWeight: "700", letterSpacing: 0.8 } }, title),
-          h(RN.Text, { style: { color: colors.text, fontSize: 18, fontWeight: "700", marginTop: 2 }, numberOfLines: 1 }, String(entry.an || "Unknown")))),
-      h(RN.Text, { style: { color: colors.sub, fontSize: 14, marginTop: 14 } }, verb),
-      h(RN.View, { style: { marginTop: 10, padding: 14, borderRadius: 14, borderLeftWidth: 4, borderLeftColor: RED, backgroundColor: "rgba(237,66,69,0.10)" } },
-        h(RN.Text, { style: { color: colors.text, fontSize: 15, lineHeight: 21 } }, entry.t || "(no message text)")),
-      h(RN.View, { style: { flexDirection: "row", marginTop: 20 } },
-        btn("Dismiss", close, false), btn("Jump to message", jump, true)));
+    later(showNextDmMessageAlert, nextDelay);
   }
 
   function showDmMessageAlert(entry) {
@@ -1437,130 +1413,18 @@ const implementation = (() => {
     } catch (_) {
       dmAlertShowing = false;
       toast(title + " from " + entry.an + ": " + clip(entry.t, 80));
-      setTimeout(showNextDmMessageAlert, 180);
+      later(showNextDmMessageAlert, 180);
     }
-  }
-
-  function MessageCacheLimitModal(props) {
-    const [value, setValue] = React.useState(String(props.initialValue || DEFAULT_RAW_BUFFER));
-    const [error, setError] = React.useState("");
-    const colors = palette();
-    const action = (label, onPress, primary) => React.createElement(RN.Pressable, {
-      key: label,
-      onPress,
-      accessibilityRole: "button",
-      style: { minHeight: 46, paddingHorizontal: 18, borderRadius: 14, marginLeft: primary ? 10 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? colors.acc : "rgba(128,128,128,0.22)" },
-    }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" } }, label));
-    const save = () => {
-      const count = Number(String(value).trim());
-      if (!Number.isInteger(count) || count < MIN_RAW_BUFFER || count > MAX_RAW_BUFFER) {
-        setError("Enter a whole number from " + MIN_RAW_BUFFER + " to " + MAX_RAW_BUFFER + ".");
-        return;
-      }
-      closeSettingsAlert();
-      if (typeof props.onSave === "function") props.onSave(count);
-    };
-    return React.createElement(RN.View, { style: { width: "92%", maxWidth: 440, alignSelf: "center", padding: 18, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
-      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Maximum cached messages"),
-      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "Keeps messages Discord delivers while running. The cache uses an estimated 8 MiB budget and does not download history."),
-      React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, keyboardType: "number-pad", accessibilityLabel: "Maximum cached messages", style: { minHeight: 48, paddingHorizontal: 14, borderRadius: 14, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
-      error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
-      React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", marginTop: 18 } },
-        action("Cancel", closeSettingsAlert, false), action("Save", save, true)));
-  }
-
-  function LogFilterModal(props) {
-    const initial = props.initialValue || {};
-    const [query, setQuery] = React.useState(initial.query || "");
-    const [from, setFrom] = React.useState(initial.from || "");
-    const [to, setTo] = React.useState(initial.to || "");
-    const [name, setName] = React.useState("");
-    const [error, setError] = React.useState("");
-    const colors = palette();
-    const current = () => ({ query: query.trim(), from: from.trim(), to: to.trim() });
-    const validate = () => {
-      const f = from.trim(), t = to.trim();
-      if ((f && !/^\d{4}-\d{2}-\d{2}$/.test(f)) || (t && !/^\d{4}-\d{2}-\d{2}$/.test(t)) || (f && Number.isNaN(Date.parse(f))) || (t && Number.isNaN(Date.parse(t)))) {
-        setError("Use dates in YYYY-MM-DD format."); return false;
-      }
-      if (f && t && f > t) { setError("The start date must be before the end date."); return false; }
-      return true;
-    };
-    const action = (label, onPress, primary) => React.createElement(RN.Pressable, {
-      key: label, onPress, accessibilityRole: "button",
-      style: { minHeight: 44, paddingHorizontal: 14, borderRadius: 14, marginLeft: primary ? 8 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? colors.acc : "rgba(128,128,128,0.22)" },
-    }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 14, fontWeight: "600" } }, label));
-    const field = (label, value, onChangeText, keyboardType) => React.createElement(RN.TextInput, {
-      value, onChangeText, placeholder: label, keyboardType: keyboardType || "default", autoCapitalize: "none", autoCorrect: false,
-      accessibilityLabel: label,
-      style: { minHeight: 46, paddingHorizontal: 14, marginTop: 8, borderRadius: 14, color: colors.text, backgroundColor: "rgba(128,128,128,0.16)" },
-    });
-    const apply = (filter) => {
-      if (!filter && !validate()) return;
-      closeSettingsAlert();
-      if (typeof props.onApply === "function") props.onApply(filter || current());
-    };
-    const save = () => {
-      if (!validate()) return;
-      if (!name.trim()) { setError("Enter a name for this saved filter."); return; }
-      closeSettingsAlert();
-      if (typeof props.onSave === "function") props.onSave({ ...current(), name: name.trim() });
-    };
-    const saved = Array.isArray(props.savedFilters) ? props.savedFilters : [];
-    return React.createElement(RN.ScrollView, { style: { width: "92%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 18, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
-      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Search logs"),
-      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 13 } }, "Search matches user, channel, server, and message text."),
-      field("User, channel, server, or message", query, setQuery),
-      field("From (YYYY-MM-DD)", from, setFrom),
-      field("To (YYYY-MM-DD)", to, setTo),
-      error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
-      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 16, fontWeight: "600", marginTop: 16 } }, "Saved filters"),
-      saved.length ? saved.map((item, index) => React.createElement(RN.View, {
-        key: "saved-filter-" + index,
-        style: { flexDirection: "row", alignItems: "center", borderBottomWidth: 1, borderBottomColor: "rgba(128,128,128,0.2)" },
-      }, React.createElement(RN.Pressable, {
-        onPress: () => apply(item), accessibilityRole: "button",
-        style: { flex: 1, paddingVertical: 10 },
-      }, React.createElement(RN.Text, { style: { color: colors.text, fontSize: 14 } }, item.name || "Saved filter")),
-      React.createElement(RN.Pressable, {
-        onPress: () => { closeSettingsAlert(); if (typeof props.onDeleteFilter === "function") props.onDeleteFilter(index); },
-        accessibilityRole: "button", accessibilityLabel: "Delete saved filter " + (item.name || "Saved filter"),
-        style: { paddingHorizontal: 12, paddingVertical: 10 },
-      }, React.createElement(RN.Text, { style: { color: RED, fontSize: 14, fontWeight: "600" } }, "Delete"))))
-        : React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 13, marginTop: 8 } }, "No saved filters yet."),
-      field("Name to save this filter", name, setName),
-      React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", flexWrap: "wrap", marginTop: 16 } },
-        action("Cancel", closeSettingsAlert, false), action("Clear", () => apply({ query: "", from: "", to: "" }), false), action("Apply", () => apply(), true), action("Save filter", save, true)));
-  }
-
-  function settingsFormComponent(name) {
-    let formModule = null;
-    try { formModule = findByProps("Form", "FormSection"); } catch (_) {}
-    const direct = (formModule && formModule[name]) || (ui.components && ui.components.Forms && ui.components.Forms[name]);
-    if (typeof direct === "function" || direct && typeof direct === "object") return direct;
-    try {
-      const module = findByProps(name);
-      const component = module && module[name];
-      if (typeof component === "function" || component && typeof component === "object") return component;
-    } catch (_) {}
-    for (const searchExports of [false, true]) {
-      try {
-        const found = findByName(name, searchExports);
-        const component = found && (found.default || found[name] || found);
-        if (typeof component === "function" || component && typeof component === "object") return component;
-      } catch (_) {}
-    }
-    return null;
   }
 
   /* ---- shared settings design kit (identical in AML / GPL / QT) ---- */
   const KIT_TILES = {
-    lang: ["LanguageIcon", "\u6587", "#5865F2"], paint: ["PaintPaletteIcon", "\u25C9", "#EB459E"], time: ["ClockIcon", "\u25F7", "#F0B232"],
+    lang: ["LanguageIcon", "\u6587", "#5865F2"], paint: ["PaintPaletteIcon", "\u25C9", "#EB459E"], time: ["ClockIcon", "\u25F7", "#E58A00"],
     store: ["ClipboardListIcon", "\u25A3", "#3BA55D"], trash: ["TrashIcon", "\u232B", "#ED4245"], edit: ["PencilIcon", "\u270E", "#F07B3E"],
-    shield: ["ShieldIcon", "\u2298", "#80848E"], bell: ["BellIcon", "!", "#F0B232"], at: ["BellIcon", "@", "#ED4245"],
+    shield: ["ShieldIcon", "\u2298", "#80848E"], bell: ["BellIcon", "!", "#E58A00"], at: ["BellIcon", "@", "#ED4245"],
     reply: ["ChatMarkUnreadIcon", "\u21A9", "#5865F2"], search: ["CompassIcon", "\u2315", "#1ABC9C"], chat: ["ChatMarkUnreadIcon", "\u25A4", "#5865F2"],
     plus: ["PlusSmallIcon", "+", "#5865F2"], link: ["LinkIcon", "\u2197", "#3498DB"], test: ["WrenchIcon", "\u25B7", "#9B59B6"],
-    star: ["StarIcon", "\u2605", "#F1C40F"], server: ["PinIcon", "\u25C7", "#3498DB"], power: ["SettingsIcon", "\u25CF", "#43B581"],
+    star: ["StarIcon", "\u2605", "#D99700"], server: ["PinIcon", "\u25C7", "#3498DB"], power: ["SettingsIcon", "\u25CF", "#43B581"],
     text: ["PencilIcon", "Aa", "#F07B3E"], guide: ["ClipboardCheckIcon", "?", "#5865F2"], gear: ["SettingsIcon", "\u2022", "#80848E"]
   };
   const KIT_RULES = [
@@ -1576,10 +1440,11 @@ const implementation = (() => {
   ];
   const kitAssetCache = new Map();
   function kitAsset(name) {
-    if (kitAssetCache.has(name)) return kitAssetCache.get(name);
+    const hit = kitAssetCache.get(name);
+    if (hit && (hit.id || Date.now() - hit.at < 5000)) return hit.id;
     let id = null;
     try { const r = globalThis.rain; id = (r && r.api && r.api.assets && r.api.assets.findAssetId && r.api.assets.findAssetId(name)) || null; } catch (_) { id = null; }
-    kitAssetCache.set(name, id);
+    kitAssetCache.set(name, { id, at: Date.now() });
     return id;
   }
   function hexA(hex, a) {
@@ -1625,8 +1490,11 @@ const implementation = (() => {
     const C = palette(), h = React.createElement;
     const key = p.__fallbackIcon ? (kitIconKey(p) || "gear") : kitIconKey(p);
     const tile = key ? KitTile({ k: key, size: 34 }) : null;
+    const tr = p.trailing;
+    const flip = !p.onPress && tr && tr.type === CustomSwitch && tr.props && typeof tr.props.onChange === "function" ? () => tr.props.onChange(!tr.props.value) : null;
+    const press = p.onPress || flip;
     return h(RN.Pressable, {
-      accessibilityRole: p.onPress ? "button" : undefined, onPress: p.onPress, disabled: !p.onPress,
+      accessibilityRole: press ? "button" : undefined, onPress: press || undefined, disabled: !press,
       style: ({ pressed }) => ({ minHeight: 66, paddingHorizontal: 16, paddingVertical: 13, flexDirection: "row", alignItems: "center", backgroundColor: pressed ? C.press : "transparent" })
     },
       tile,
@@ -1668,11 +1536,12 @@ const implementation = (() => {
       style: [{ minHeight: 50, borderRadius: 14, borderWidth: 1.5, borderColor: focused ? C.blurple : C.card2, backgroundColor: C.bg, color: C.text, paddingHorizontal: 15, fontSize: 16 }, p.style]
     });
   }
+  let kitHeroPlayed = false;
   function KitHero(p) {
     const C = palette(), h = React.createElement, accent = p.accent || C.blurple;
     const stats = (p.stats || []).filter(Boolean);
-    const enter = React.useRef(new RN.Animated.Value(0)).current;
-    React.useEffect(() => { RN.Animated.spring(enter, { toValue: 1, speed: 14, bounciness: 6, useNativeDriver: true }).start(); }, []);
+    const enter = React.useRef(new RN.Animated.Value(kitHeroPlayed ? 1 : 0)).current;
+    React.useEffect(() => { if (kitHeroPlayed) return; kitHeroPlayed = true; RN.Animated.spring(enter, { toValue: 1, speed: 14, bounciness: 6, useNativeDriver: true }).start(); }, []);
     return h(RN.Animated.View, { style: { borderRadius: 26, backgroundColor: C.card, borderWidth: 1, borderColor: hexA(accent, 0.4), padding: 18, marginBottom: 24, overflow: "hidden", opacity: enter, transform: [{ scale: enter.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }] } },
       h(RN.View, { pointerEvents: "none", style: { position: "absolute", top: -60, right: -50, width: 190, height: 190, borderRadius: 95, backgroundColor: hexA(accent, 0.16) } }),
       h(RN.View, { pointerEvents: "none", style: { position: "absolute", bottom: -70, left: -40, width: 140, height: 140, borderRadius: 70, backgroundColor: hexA(accent, 0.08) } }),
@@ -1730,53 +1599,6 @@ const implementation = (() => {
       if (typeof useNavigation === "function") settingsNavigation = useNavigation();
     } catch (_) {}
     const refreshUI = () => bump((x) => x + 1);
-    const F = {
-      TableRowGroup: settingsFormComponent("TableRowGroup"),
-      TableRow: settingsFormComponent("TableRow"),
-      TableSwitchRow: settingsFormComponent("TableSwitchRow"),
-      FormSection: settingsFormComponent("FormSection"),
-      FormRow: settingsFormComponent("FormRow"),
-      FormSwitchRow: settingsFormComponent("FormSwitchRow"),
-      FormSwitch: settingsFormComponent("FormSwitch"),
-      FormDivider: settingsFormComponent("FormDivider"),
-      FormInput: settingsFormComponent("FormInput"),
-    };
-    const nativeIconCache = new Map();
-    const settingIcon = (key, label) => {
-      const Icon = (F.TableRow && F.TableRow.Icon) || (F.FormRow && F.FormRow.Icon);
-      if (!Icon || !ui.assets || typeof ui.assets.getAssetIDByName !== "function") return undefined;
-      const cacheKey = String(key || "") + " " + String(label || "");
-      if (nativeIconCache.has(cacheKey)) return nativeIconCache.get(cacheKey);
-      const text = cacheKey.toLowerCase();
-      const patterns = /color|redname|namecolor/.test(text) ? [/paint_brush/i, /palette/i, /color/i]
-        : /separator/.test(text) ? [/more_vertical/i, /dots_vertical/i, /ellipsis_vertical/i, /more/i]
-        : /^(notifyedited|notify-edited)$/.test(String(key || "").toLowerCase()) ? [/edit/i, /pencil/i, /audit_update/i]
-        : /^(logdeleted|logedited)$/.test(String(key || "").toLowerCase()) ? [/eye_hidden/i, /visibility_off/i]
-        : /time|clock/.test(text) ? [/clock/i, /time/i]
-        : /deleted|delete/.test(text) ? [/eye_hidden/i, /delete/i, /trash/i]
-        : /edit|edited/.test(text) ? [/edit/i, /pencil/i, /audit_update/i]
-        : /ignore/.test(text) ? [/close_24px/i, /person/i, /ignore/i]
-        : /bot/.test(text) ? [/close_24px/i, /bot/i]
-        : /user/.test(text) ? [/person/i, /user/i]
-        : /color/.test(text) ? [/paint_brush/i, /color/i, /palette/i]
-        : /storage|save|persist|cache/.test(text) ? [/storage/i, /save/i, /database/i, /download/i]
-        : /search|filter/.test(text) ? [/search/i, /filter/i]
-        : /message|log/.test(text) ? [/message/i, /chat/i, /text/i]
-        : /server|channel/.test(text) ? [/server/i, /channel/i]
-        : null;
-      let icon = null;
-      try {
-        const names = Object.keys(ui.assets.all || {});
-        let name = null;
-        if (patterns) for (const pattern of patterns) { name = names.find((candidate) => pattern.test(candidate)); if (name) break; }
-        if (name) {
-          const source = ui.assets.getAssetIDByName(name);
-          if (source != null) icon = h(Icon, { source });
-        }
-      } catch (_) {}
-      nativeIconCache.set(cacheKey, icon || undefined);
-      return icon || undefined;
-    };
     const C = palette();
     const h = React.createElement;
 
@@ -1797,7 +1619,7 @@ const implementation = (() => {
     };
 
     const rowSet=new WeakSet(),sectionTitles=new WeakMap(),mark=(el)=>{rowSet.add(el);return el;},HEXCOLOR=/^#[0-9A-Fa-f]{6}$/;
-    const Text=(props,...kids)=>h(RN.Text,props,...kids),rowIcon=(key)=>/color/.test(key)?"\u25C9":/capture|cache|message|history|nav|log/.test(key)?"\u25F7":/filter|search/.test(key)?"\u2315":/ignore/.test(key)?"\u2298":"\u2726";
+    const Text=(props,...kids)=>h(RN.Text,props,...kids);
     const Section=(title)=>{const m=h(RN.View,{key:"sec-"+title});sectionTitles.set(m,title);return m;};
     const valueChip=(r)=>{if(!r)return null;if(r===">"||r==="\u203A")return Text({style:{color:C.sub,fontSize:24,marginLeft:7,fontWeight:"300"}},"\u203A");const v=String(r);if(HEXCOLOR.test(v))return h(RN.View,{style:{flexDirection:"row",alignItems:"center",marginLeft:8}},h(RN.View,{style:{width:20,height:20,borderRadius:10,backgroundColor:v,borderWidth:1,borderColor:C.divider}}));return Text({style:{color:C.sub,fontSize:14,marginLeft:8},numberOfLines:1},v);};
     const PressRow=(key,label,sub,onPress,right)=>mark(h(CustomRow,{key,title:label,subtitle:sub,onPress,noIcon:/^(logged-|ghost-history-|ignored-|saved-ping-filter-|filter-use-|filter-delete-)/.test(String(key)),trailing:(key==="capture-mode"||key==="retention")?kitMenuPill(right):valueChip(right)}));
@@ -2140,6 +1962,8 @@ const implementation = (() => {
   }
 
   function onUnload() {
+    for (const t of pendingTimers) clearTimeout(t);
+    pendingTimers.clear();
     dmAlertQueue.length = 0;
     dmAlertShowing = false;
     flush();

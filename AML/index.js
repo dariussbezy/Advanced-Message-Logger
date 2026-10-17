@@ -1,7 +1,11 @@
 const rainRuntime = globalThis.rain;
 if (!rainRuntime || !rainRuntime.api || !rainRuntime.api.storage) throw new Error("Discord plugin API unavailable");
 const rainStore = rainRuntime.api.storage.createPluginStore("aml", {});
-const pluginStorage = rainStore.settings;
+const updatePluginSettings = (patch) => rainStore.useStore.getState().updateSettings(patch);
+const pluginSettings = new Proxy(Object.create(null), {
+  get(_target, prop) { return Reflect.get(rainStore.useStore.getState(), prop); },
+  set(_target, prop, value) { updatePluginSettings({ [prop]: value }); return true; },
+});
 const implementation = (() => {
   "use strict";
   const { metro } = rainRuntime;
@@ -17,7 +21,7 @@ const implementation = (() => {
   const MAX_LOGGED = 2000;
   const MAX_EDITED = 1000;
   const MAX_SAVED_RAW = 1000;
-  const DEFAULT_RAW_BUFFER = 10000;
+  const DEFAULT_RAW_BUFFER = 5000;
   const MIN_RAW_BUFFER = 100;
   const MAX_RAW_BUFFER = 20000;
   const MAX_RAW_SIZE = 20000;
@@ -48,12 +52,6 @@ const implementation = (() => {
   let rawArchiveTimer = null;
   const allowDelete = new Map();
   const unpatches = [];
-  const pendingTimers = new Set();
-  function later(fn, ms) {
-    const id = setTimeout(() => { pendingTimers.delete(id); fn(); }, ms);
-    pendingTimers.add(id);
-    return id;
-  }
   let ActionSheet;
   let ActionSheetRowIconComponent;
   let MessageStore;
@@ -77,7 +75,10 @@ const implementation = (() => {
   const profileTypeWrappers = new WeakMap();
   const profileWrappedTypes = new WeakSet();
 
-  const cfg = () => pluginStorage;
+  const cfg = () => pluginSettings;
+  let hydrationUnsubscribe = null;
+  let loadRequested = false;
+  let initialized = false;
   const GPL_BRIDGE_KEY = "__advanced_message_logger_gpl_bridge_v1__";
   const GPL_ALERT_BRIDGE_KEY = "__ghost_ping_logger_aml_bridge_v1__";
   let gplBridge = null;
@@ -320,7 +321,6 @@ const implementation = (() => {
     schedule();
   }
 
-  let flushFailures = 0;
   function flush() {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     if (!dirty) return;
@@ -340,12 +340,8 @@ const implementation = (() => {
         const ed = {};
         for (const [id, en] of edits) ed[id] = en;
         cfg().saved = { v: 2, deleted: del, edits: ed };
-        flushFailures = 0;
       }
-    } catch (_) {
-      dirty = true;
-      if (++flushFailures <= 3) schedule();
-    }
+    } catch (_) {}
   }
 
   function loadSaved() {
@@ -489,7 +485,7 @@ const implementation = (() => {
   }
 
   function refreshToggle(msg, channelId, id, guildId) {
-    later(() => {
+    setTimeout(() => {
       try {
         FluxDispatcher.dispatch({
           type: "MESSAGE_UPDATE",
@@ -1383,13 +1379,48 @@ const implementation = (() => {
       : { text: "#FFFFFF", sub: "#B5BAC1", bg: "#1E1F22", card: "#2B2D31", acc: "#5865F2", accPressed: "#4752C4", blurple: "#5865F2", card2: "rgba(255,255,255,0.06)", chip: "rgba(255,255,255,0.10)", press: "rgba(255,255,255,0.07)", divider: "rgba(255,255,255,0.09)", off: "#4E5058" };
 }
 
+  function closeSettingsAlert() {
+    try {
+      const alerts = findByProps("openLazy", "close");
+      if (alerts && typeof alerts.close === "function") alerts.close();
+    } catch (_) {}
+  }
+
   function dismissDmMessageAlert(entry, jump) {
     dmAlertShowing = false;
     if (jump && entry && entry.c && entry.id) {
-      later(() => jumpTo(entry.c, entry.g, entry.id, null), 180);
+      setTimeout(() => jumpTo(entry.c, entry.g, entry.id, null), 180);
     }
     const nextDelay = jump ? 2400 : 180;
-    later(showNextDmMessageAlert, nextDelay);
+    setTimeout(showNextDmMessageAlert, nextDelay);
+  }
+
+  function DmMessageAlert(props) {
+    const entry = props.entry || {};
+    const colors = palette();
+    const dark = colors.text === "#FFFFFF";
+    const h = React.createElement;
+    const close = () => dismissDmMessageAlert(entry, false);
+    const jump = () => dismissDmMessageAlert(entry, true);
+    const deletedMessage = entry.kind === "deleted";
+    const title = deletedMessage ? "MESSAGE DELETED" : "MESSAGE EDITED";
+    const verb = deletedMessage ? "deleted a message in your DM" : "edited a message in your DM";
+    const btn = (label, onPress, primary) => h(RN.Pressable, {
+      key: label, onPress, accessibilityRole: "button",
+      style: ({ pressed }) => ({ flex: 1, minHeight: 48, borderRadius: 14, alignItems: "center", justifyContent: "center", marginLeft: primary ? 10 : 0, backgroundColor: primary ? (pressed ? colors.accPressed : colors.acc) : (pressed ? "rgba(128,128,128,0.32)" : "rgba(128,128,128,0.22)") }),
+    }, h(RN.Text, { style: { color: primary ? "#FFFFFF" : colors.text, fontSize: 15, fontWeight: "700" } }, label));
+    return h(RN.View, { style: { width: "92%", maxWidth: 440, alignSelf: "center", padding: 22, borderRadius: 22, backgroundColor: dark ? "#2B2D31" : "#FFFFFF" } },
+      h(RN.View, { style: { flexDirection: "row", alignItems: "center" } },
+        h(RN.View, { style: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(237,66,69,0.16)" } },
+          h(RN.Text, { style: { fontSize: 24 } }, deletedMessage ? "\uD83D\uDDD1\uFE0F" : "\u270F\uFE0F")),
+        h(RN.View, { style: { flex: 1, marginLeft: 14 } },
+          h(RN.Text, { style: { color: RED, fontSize: 12, fontWeight: "700", letterSpacing: 0.8 } }, title),
+          h(RN.Text, { style: { color: colors.text, fontSize: 18, fontWeight: "700", marginTop: 2 }, numberOfLines: 1 }, String(entry.an || "Unknown")))),
+      h(RN.Text, { style: { color: colors.sub, fontSize: 14, marginTop: 14 } }, verb),
+      h(RN.View, { style: { marginTop: 10, padding: 14, borderRadius: 14, borderLeftWidth: 4, borderLeftColor: RED, backgroundColor: "rgba(237,66,69,0.10)" } },
+        h(RN.Text, { style: { color: colors.text, fontSize: 15, lineHeight: 21 } }, entry.t || "(no message text)")),
+      h(RN.View, { style: { flexDirection: "row", marginTop: 20 } },
+        btn("Dismiss", close, false), btn("Jump to message", jump, true)));
   }
 
   function showDmMessageAlert(entry) {
@@ -1413,261 +1444,147 @@ const implementation = (() => {
     } catch (_) {
       dmAlertShowing = false;
       toast(title + " from " + entry.an + ": " + clip(entry.t, 80));
-      later(showNextDmMessageAlert, 180);
+      setTimeout(showNextDmMessageAlert, 180);
     }
   }
 
-  /* ---- shared settings design kit (identical in AML / GPL / QT) ---- */
-  const KIT_TILES = {
-    lang: ["LanguageIcon", "\u6587", "#5865F2"], paint: ["PaintPaletteIcon", "\u25C9", "#EB459E"], time: ["ClockIcon", "\u25F7", "#E58A00"],
-    store: ["ClipboardListIcon", "\u25A3", "#3BA55D"], trash: ["TrashIcon", "\u232B", "#ED4245"], edit: ["PencilIcon", "\u270E", "#F07B3E"],
-    shield: ["ShieldIcon", "\u2298", "#80848E"], bell: ["BellIcon", "!", "#E58A00"], at: ["BellIcon", "@", "#ED4245"],
-    reply: ["ChatMarkUnreadIcon", "\u21A9", "#5865F2"], search: ["CompassIcon", "\u2315", "#1ABC9C"], chat: ["ChatMarkUnreadIcon", "\u25A4", "#5865F2"],
-    plus: ["PlusSmallIcon", "+", "#5865F2"], link: ["LinkIcon", "\u2197", "#3498DB"], test: ["WrenchIcon", "\u25B7", "#9B59B6"],
-    star: ["StarIcon", "\u2605", "#D99700"], server: ["PinIcon", "\u25C7", "#3498DB"], power: ["SettingsIcon", "\u25CF", "#43B581"],
-    text: ["PencilIcon", "Aa", "#F07B3E"], guide: ["ClipboardCheckIcon", "?", "#5865F2"], gear: ["SettingsIcon", "\u2022", "#80848E"]
-  };
-  const KIT_RULES = [
-    [/^(default|red|orange|gold|green|teal|blue|indigo|purple|pink|gray)$/i, null],
-    [/^ghost ping logger$/i, "power"], [/color|appearance/, "paint"], [/notify|alert|toast/, "bell"], [/test/, "test"],
-    [/button|position|composer/, "plus"], [/clear|remove/, "trash"],
-    [/clock|time|history|retention|keep .* for/, "time"], [/quick|favorite|saved/, "star"],
-    [/cache|storage|persist|remember|restart|across/, "store"],
-    [/deleted|delete/, "trash"], [/edit/, "edit"], [/ignore/, "shield"], [/mention|everyone|ping/, "at"],
-    [/reply|replies/, "reply"], [/filter|search/, "search"], [/jump/, "link"],
-    [/translate|translation|google|deepl|language/, "lang"], [/word|term/, "text"], [/server|guild/, "server"],
-    [/capture|message|channel|dm/, "chat"], [/enabled|logger/, "power"]
-  ];
-  const kitAssetCache = new Map();
-  function kitAsset(name) {
-    const hit = kitAssetCache.get(name);
-    if (hit && (hit.id || Date.now() - hit.at < 5000)) return hit.id;
-    let id = null;
-    try { const r = globalThis.rain; id = (r && r.api && r.api.assets && r.api.assets.findAssetId && r.api.assets.findAssetId(name)) || null; } catch (_) { id = null; }
-    kitAssetCache.set(name, { id, at: Date.now() });
-    return id;
+  function MessageCacheLimitModal(props) {
+    const [value, setValue] = React.useState(String(props.initialValue || DEFAULT_RAW_BUFFER));
+    const [error, setError] = React.useState("");
+    const colors = palette();
+    const action = (label, onPress, primary) => React.createElement(RN.Pressable, {
+      key: label,
+      onPress,
+      accessibilityRole: "button",
+      style: { minHeight: 46, paddingHorizontal: 18, borderRadius: 14, marginLeft: primary ? 10 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? colors.acc : "rgba(128,128,128,0.22)" },
+    }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 15, fontWeight: "600" } }, label));
+    const save = () => {
+      const count = Number(String(value).trim());
+      if (!Number.isInteger(count) || count < MIN_RAW_BUFFER || count > MAX_RAW_BUFFER) {
+        setError("Enter a whole number from " + MIN_RAW_BUFFER + " to " + MAX_RAW_BUFFER + ".");
+        return;
+      }
+      closeSettingsAlert();
+      if (typeof props.onSave === "function") props.onSave(count);
+    };
+    return React.createElement(RN.View, { style: { width: "92%", maxWidth: 440, alignSelf: "center", padding: 18, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Maximum cached messages"),
+      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 14, marginBottom: 16 } }, "Keeps messages Discord delivers while running. The cache uses an estimated 8 MiB budget and does not download history."),
+      React.createElement(RN.TextInput, { value, onChangeText: (next) => { setValue(next); setError(""); }, keyboardType: "number-pad", accessibilityLabel: "Maximum cached messages", style: { minHeight: 48, paddingHorizontal: 14, borderRadius: 14, color: colors.text, fontSize: 17, backgroundColor: "rgba(128,128,128,0.16)" } }),
+      error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
+      React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", marginTop: 18 } },
+        action("Cancel", closeSettingsAlert, false), action("Save", save, true)));
   }
-  function hexA(hex, a) {
-    const m = /^#([0-9a-f]{6})$/i.exec(String(hex || ""));
-    if (!m) return hex;
-    const n = Math.round(a * 255).toString(16);
-    return "#" + m[1] + (n.length < 2 ? "0" + n : n);
+
+  function LogFilterModal(props) {
+    const initial = props.initialValue || {};
+    const [query, setQuery] = React.useState(initial.query || "");
+    const [from, setFrom] = React.useState(initial.from || "");
+    const [to, setTo] = React.useState(initial.to || "");
+    const [name, setName] = React.useState("");
+    const [error, setError] = React.useState("");
+    const colors = palette();
+    const current = () => ({ query: query.trim(), from: from.trim(), to: to.trim() });
+    const validate = () => {
+      const f = from.trim(), t = to.trim();
+      if ((f && !/^\d{4}-\d{2}-\d{2}$/.test(f)) || (t && !/^\d{4}-\d{2}-\d{2}$/.test(t)) || (f && Number.isNaN(Date.parse(f))) || (t && Number.isNaN(Date.parse(t)))) {
+        setError("Use dates in YYYY-MM-DD format."); return false;
+      }
+      if (f && t && f > t) { setError("The start date must be before the end date."); return false; }
+      return true;
+    };
+    const action = (label, onPress, primary) => React.createElement(RN.Pressable, {
+      key: label, onPress, accessibilityRole: "button",
+      style: { minHeight: 44, paddingHorizontal: 14, borderRadius: 14, marginLeft: primary ? 8 : 0, alignItems: "center", justifyContent: "center", backgroundColor: primary ? colors.acc : "rgba(128,128,128,0.22)" },
+    }, React.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 14, fontWeight: "600" } }, label));
+    const field = (label, value, onChangeText, keyboardType) => React.createElement(RN.TextInput, {
+      value, onChangeText, placeholder: label, keyboardType: keyboardType || "default", autoCapitalize: "none", autoCorrect: false,
+      accessibilityLabel: label,
+      style: { minHeight: 46, paddingHorizontal: 14, marginTop: 8, borderRadius: 14, color: colors.text, backgroundColor: "rgba(128,128,128,0.16)" },
+    });
+    const apply = (filter) => {
+      if (!filter && !validate()) return;
+      closeSettingsAlert();
+      if (typeof props.onApply === "function") props.onApply(filter || current());
+    };
+    const save = () => {
+      if (!validate()) return;
+      if (!name.trim()) { setError("Enter a name for this saved filter."); return; }
+      closeSettingsAlert();
+      if (typeof props.onSave === "function") props.onSave({ ...current(), name: name.trim() });
+    };
+    const saved = Array.isArray(props.savedFilters) ? props.savedFilters : [];
+    return React.createElement(RN.ScrollView, { style: { width: "92%", maxWidth: 440, maxHeight: "90%", alignSelf: "center", padding: 18, borderRadius: 22, backgroundColor: colors.text === "#FFFFFF" ? "#2B2D31" : "#FFFFFF" } },
+      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 20, fontWeight: "700", marginBottom: 8 } }, "Search logs"),
+      React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 13 } }, "Search matches user, channel, server, and message text."),
+      field("User, channel, server, or message", query, setQuery),
+      field("From (YYYY-MM-DD)", from, setFrom),
+      field("To (YYYY-MM-DD)", to, setTo),
+      error ? React.createElement(RN.Text, { style: { color: RED, fontSize: 13, marginTop: 8 } }, error) : null,
+      React.createElement(RN.Text, { style: { color: colors.text, fontSize: 16, fontWeight: "600", marginTop: 16 } }, "Saved filters"),
+      saved.length ? saved.map((item, index) => React.createElement(RN.View, {
+        key: "saved-filter-" + index,
+        style: { flexDirection: "row", alignItems: "center", borderBottomWidth: 1, borderBottomColor: "rgba(128,128,128,0.2)" },
+      }, React.createElement(RN.Pressable, {
+        onPress: () => apply(item), accessibilityRole: "button",
+        style: { flex: 1, paddingVertical: 10 },
+      }, React.createElement(RN.Text, { style: { color: colors.text, fontSize: 14 } }, item.name || "Saved filter")),
+      React.createElement(RN.Pressable, {
+        onPress: () => { closeSettingsAlert(); if (typeof props.onDeleteFilter === "function") props.onDeleteFilter(index); },
+        accessibilityRole: "button", accessibilityLabel: "Delete saved filter " + (item.name || "Saved filter"),
+        style: { paddingHorizontal: 12, paddingVertical: 10 },
+      }, React.createElement(RN.Text, { style: { color: RED, fontSize: 14, fontWeight: "600" } }, "Delete"))))
+        : React.createElement(RN.Text, { style: { color: colors.sub, fontSize: 13, marginTop: 8 } }, "No saved filters yet."),
+      field("Name to save this filter", name, setName),
+      React.createElement(RN.View, { style: { flexDirection: "row", justifyContent: "flex-end", flexWrap: "wrap", marginTop: 16 } },
+        action("Cancel", closeSettingsAlert, false), action("Clear", () => apply({ query: "", from: "", to: "" }), false), action("Apply", () => apply(), true), action("Save filter", save, true)));
   }
+
+  function settingsFormComponent(name) {
+    let formModule = null;
+    try { formModule = findByProps("Form", "FormSection"); } catch (_) {}
+    const direct = (formModule && formModule[name]) || (ui.components && ui.components.Forms && ui.components.Forms[name]);
+    if (typeof direct === "function" || direct && typeof direct === "object") return direct;
+    try {
+      const module = findByProps(name);
+      const component = module && module[name];
+      if (typeof component === "function" || component && typeof component === "object") return component;
+    } catch (_) {}
+    for (const searchExports of [false, true]) {
+      try {
+        const found = findByName(name, searchExports);
+        const component = found && (found.default || found[name] || found);
+        if (typeof component === "function" || component && typeof component === "object") return component;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function CustomSection(p){const C=palette();return React.createElement(RN.View,{style:{marginBottom:p.compact?14:22}},p.title?React.createElement(RN.Text,{style:{color:C.sub,fontSize:13,fontWeight:"700",letterSpacing:.4,marginHorizontal:5,marginBottom:9,textTransform:"uppercase"}},p.title):null,React.createElement(RN.View,{style:{backgroundColor:C.card,borderRadius:17,overflow:"hidden",borderWidth:1,borderColor:C.card2}},p.children));}
   function settingIconForTitle(title) {
     const text = String(title || "").toLowerCase();
-    const match = KIT_RULES.find(([pattern]) => pattern.test(text));
-    return match ? match[1] : null;
-  }
-  function kitIconKey(p) {
-    if (!p || p.noIcon) return null;
-    if (p.icon && KIT_TILES[p.icon]) return p.icon;
-    return settingIconForTitle(p.title);
-  }
-  function KitChevron(p) {
-    const h = React.createElement, s = p.size || 8, deg = p.dir === "up" ? "225deg" : p.dir === "right" ? "-45deg" : "45deg";
-    return h(RN.View, { style: { width: s, height: s, borderRightWidth: 2, borderBottomWidth: 2, borderColor: p.color, borderRadius: 1, transform: [{ rotate: deg }], marginTop: p.dir === "up" ? 3 : p.dir === "down" ? -3 : 0, marginHorizontal: 3 } });
-  }
-  function KitTile(p) {
-    const h = React.createElement, t = KIT_TILES[p.k] || KIT_TILES.gear, size = p.size || 32, asset = kitAsset(t[0]);
-    const inner = Math.round(size * 0.56);
-    return h(RN.View, { style: { width: size, height: size, borderRadius: Math.round(size * 0.3), backgroundColor: t[2], alignItems: "center", justifyContent: "center", marginRight: p.noMargin ? 0 : 13 } },
-      asset ? h(RN.Image, { source: asset, resizeMode: "contain", style: { width: inner, height: inner, tintColor: "#FFFFFF" } })
-        : h(RN.Text, { style: { color: "#FFFFFF", fontSize: Math.round(size * 0.5), fontWeight: "700" } }, t[1]));
-  }
-  function CustomSection(p) {
-    const C = palette(), h = React.createElement;
-    const kids = React.Children.toArray(p.children);
-    const any = kids.some((k) => k && k.type === CustomRow && kitIconKey(k.props));
-    const isAction = (k) => !!k && k.type === CustomAction;
-    if (kids.length && kids.every(isAction)) {
-      return h(RN.View, { style: { marginBottom: p.title ? 24 : 12 } },
-        p.title ? h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginHorizontal: 6, marginBottom: 10 } },
-          h(RN.View, { style: { width: 3, height: 14, borderRadius: 2, backgroundColor: C.blurple, marginRight: 8 } }),
-          h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 15, fontWeight: "700", flexShrink: 1 } }, p.title)) : null,
-        ...kids.map((k, i) => React.cloneElement(k, { top: i === 0 ? 0 : 10 })));
-    }
-    const out = kids.map((k, i) => isAction(k)
-      ? h(RN.View, { key: "act-" + i, style: { paddingHorizontal: 12, paddingTop: i === 0 ? 12 : 0, paddingBottom: 12 } }, React.cloneElement(k, { top: 0 }))
-      : (k && k.type === CustomRow && any && !k.props.noIcon && !kitIconKey(k.props)) ? React.cloneElement(k, { __fallbackIcon: true }) : k);
-    return h(RN.View, { style: { marginBottom: p.compact ? 14 : 24 } },
-      p.title ? h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginHorizontal: 6, marginBottom: 10 } },
-        h(RN.View, { style: { width: 3, height: 14, borderRadius: 2, backgroundColor: C.blurple, marginRight: 8 } }),
-        h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 15, fontWeight: "700", letterSpacing: 0.1, flexShrink: 1 } }, p.title)) : null,
-      h(RN.View, { style: { backgroundColor: C.card, borderRadius: 20, overflow: "hidden", borderWidth: 1, borderColor: C.card2 } }, ...out),
-      p.footer ? h(RN.Text, { style: { color: C.sub, fontSize: 12, lineHeight: 17, marginHorizontal: 8, marginTop: 8 } }, p.footer) : null);
-  }
-  function CustomRow(p) {
-    const C = palette(), h = React.createElement;
-    const key = p.__fallbackIcon ? (kitIconKey(p) || "gear") : kitIconKey(p);
-    const tile = key ? KitTile({ k: key, size: 34 }) : null;
-    return h(RN.Pressable, {
-      accessibilityRole: p.onPress ? "button" : undefined, onPress: p.onPress, disabled: !p.onPress,
-      style: ({ pressed }) => ({ minHeight: 66, paddingHorizontal: 16, paddingVertical: 13, flexDirection: "row", alignItems: "center", backgroundColor: pressed ? C.press : "transparent" })
-    },
-      tile,
-      h(RN.View, { style: { flex: 1, minWidth: 0, paddingRight: 10 } },
-        h(RN.Text, { numberOfLines: 2, style: { color: C.text, fontSize: 16, fontWeight: "600", lineHeight: 21 } }, p.title),
-        p.subtitle ? h(RN.Text, { numberOfLines: 3, style: { color: C.sub, fontSize: 13, marginTop: 3, lineHeight: 18 } }, p.subtitle) : null),
-      p.trailing || null,
-      !p.last ? h(RN.View, { style: { position: "absolute", bottom: 0, left: key ? 63 : 16, right: 0, height: 1, backgroundColor: C.card2 } }) : null);
-  }
-  function CustomSwitch(p) {
-    const C = palette(), h = React.createElement, on = !!p.value;
-    const pos = React.useRef(new RN.Animated.Value(on ? 1 : 0)).current;
-    React.useEffect(() => {
-      RN.Animated.spring(pos, { toValue: on ? 1 : 0, speed: 24, bounciness: 5, useNativeDriver: true }).start();
-    }, [on]);
-    return h(RN.Pressable, { accessibilityRole: "switch", accessibilityState: { checked: on }, onPress: () => p.onChange(!on), hitSlop: 10,
-      style: { width: 52, height: 32, borderRadius: 16, padding: 3, justifyContent: "center", backgroundColor: on ? (p.color || C.blurple) : C.off } },
-      h(RN.Animated.View, { style: { width: 26, height: 26, borderRadius: 13, backgroundColor: "#FFFFFF", shadowColor: "#000000", shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2, transform: [{ translateX: pos.interpolate({ inputRange: [0, 1], outputRange: [0, 20] }) }] } }));
-  }
-  function CustomAction(p) {
-    const C = palette(), h = React.createElement, RED_ = "#ED4245";
-    const sc = React.useRef(new RN.Animated.Value(1)).current;
-    const to = (v) => RN.Animated.spring(sc, { toValue: v, speed: 40, bounciness: 0, useNativeDriver: true }).start();
-    const bg = p.danger ? (p.secondary ? hexA(RED_, 0.14) : RED_) : (p.secondary ? C.chip : C.blurple);
-    const fg = p.danger && p.secondary ? RED_ : (p.secondary ? C.text : "#FFFFFF");
-    return h(RN.Pressable, { onPress: p.onPress, disabled: p.disabled, onPressIn: () => to(0.97), onPressOut: () => to(1), accessibilityRole: "button" },
-      h(RN.Animated.View, { style: { minHeight: p.compact ? 42 : 50, borderRadius: 15, alignItems: "center", justifyContent: "center", paddingHorizontal: p.compact ? 12 : 18, marginTop: p.top != null ? p.top : 10, backgroundColor: bg, opacity: p.disabled ? 0.45 : 1, transform: [{ scale: sc }] } },
-        h(RN.Text, { numberOfLines: 1, style: { color: fg, fontWeight: "700", fontSize: p.compact ? 15 : 16 } }, p.title)));
-  }
-  function CustomInput(p) {
-    const C = palette(), h = React.createElement;
-    const [focused, setFocused] = React.useState(false);
-    return h(RN.TextInput, {
-      ...p, placeholderTextColor: C.sub, underlineColorAndroid: "transparent", textAlignVertical: p.multiline ? "top" : "center",
-      onFocus: (e) => { setFocused(true); if (p.onFocus) p.onFocus(e); },
-      onBlur: (e) => { setFocused(false); if (p.onBlur) p.onBlur(e); },
-      style: [{ minHeight: 50, borderRadius: 14, borderWidth: 1.5, borderColor: focused ? C.blurple : C.card2, backgroundColor: C.bg, color: C.text, paddingHorizontal: 15, fontSize: 16 }, p.style]
-    });
-  }
-  let kitHeroPlayed = false;
-  function KitHero(p) {
-    const C = palette(), h = React.createElement, accent = p.accent || C.blurple;
-    const stats = (p.stats || []).filter(Boolean);
-    const enter = React.useRef(new RN.Animated.Value(kitHeroPlayed ? 1 : 0)).current;
-    React.useEffect(() => { if (kitHeroPlayed) return; kitHeroPlayed = true; RN.Animated.spring(enter, { toValue: 1, speed: 14, bounciness: 6, useNativeDriver: true }).start(); }, []);
-    return h(RN.Animated.View, { style: { borderRadius: 26, backgroundColor: C.card, borderWidth: 1, borderColor: hexA(accent, 0.4), padding: 18, marginBottom: 24, overflow: "hidden", opacity: enter, transform: [{ scale: enter.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) }] } },
-      h(RN.View, { pointerEvents: "none", style: { position: "absolute", top: -60, right: -50, width: 190, height: 190, borderRadius: 95, backgroundColor: hexA(accent, 0.16) } }),
-      h(RN.View, { pointerEvents: "none", style: { position: "absolute", bottom: -70, left: -40, width: 140, height: 140, borderRadius: 70, backgroundColor: hexA(accent, 0.08) } }),
-      h(RN.View, { style: { flexDirection: "row", alignItems: "center" } },
-        KitTile({ k: p.icon, size: 54, noMargin: true }),
-        h(RN.View, { style: { flex: 1, marginLeft: 14 } },
-          h(RN.Text, { numberOfLines: 2, style: { color: C.text, fontSize: 21, fontWeight: "800", letterSpacing: -0.2 } }, p.title),
-          p.subtitle ? h(RN.Text, { numberOfLines: 2, style: { color: C.sub, fontSize: 14, marginTop: 3, lineHeight: 19 } }, p.subtitle) : null)),
-      stats.length ? h(RN.View, { style: { flexDirection: "row", marginTop: 16 } }, ...stats.map((s, i) =>
-        h(RN.View, { key: "stat-" + i, style: { flex: 1, borderRadius: 15, backgroundColor: C.chip, paddingVertical: 11, paddingHorizontal: 12, marginRight: i === stats.length - 1 ? 0 : 8 } },
-          h(RN.Text, { numberOfLines: 1, adjustsFontSizeToFit: true, style: { color: C.text, fontSize: 19, fontWeight: "800" } }, String(s[1])),
-          h(RN.Text, { numberOfLines: 1, style: { color: C.sub, fontSize: 12, marginTop: 2, fontWeight: "600" } }, s[0])))) : null);
-  }
-  function KitGuide(p) {
-    const C = palette(), h = React.createElement;
-    const [open, setOpen] = React.useState(true);
-    const steps = p.steps || [];
-    return h(RN.View, { style: { marginTop: 4, marginBottom: 16, borderRadius: 20, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2, overflow: "hidden" } },
-      h(RN.Pressable, { onPress: () => setOpen(!open), accessibilityRole: "button", accessibilityState: { expanded: open }, style: ({ pressed }) => ({ flexDirection: "row", alignItems: "center", padding: 16, backgroundColor: pressed ? C.press : "transparent" }) },
-        KitTile({ k: "guide", size: 34 }),
-        h(RN.View, { style: { flex: 1 } },
-          h(RN.Text, { style: { color: C.text, fontSize: 17, fontWeight: "800" } }, p.title || "Quick guide"),
-          h(RN.Text, { style: { color: C.sub, fontSize: 13, marginTop: 2 } }, steps.length + " short steps")),
-        h(RN.View, { style: { width: 24, alignItems: "center", justifyContent: "center" } }, KitChevron({ dir: open ? "up" : "down", color: C.sub, size: 9 }))),
-      open ? h(RN.View, { style: { paddingHorizontal: 16, paddingBottom: 6 } }, ...steps.map((s, i) =>
-        h(RN.View, { key: "guide-" + i, style: { flexDirection: "row", paddingTop: 12, paddingBottom: 14, borderTopWidth: 1, borderTopColor: C.card2 } },
-          h(RN.View, { style: { width: 26, height: 26, borderRadius: 13, backgroundColor: hexA(C.blurple, 0.2), alignItems: "center", justifyContent: "center", marginRight: 13, marginTop: 1 } },
-            h(RN.Text, { style: { color: C.blurple, fontSize: 13, fontWeight: "800" } }, String(i + 1))),
-          h(RN.View, { style: { flex: 1 } },
-            h(RN.Text, { style: { color: C.text, fontSize: 15, fontWeight: "700", marginBottom: 3 } }, s[0]),
-            h(RN.Text, { style: { color: C.sub, fontSize: 14, lineHeight: 20 } }, s[1]))))) : null);
-  }
-  function kitIso(d) { const z = (n) => (n < 10 ? "0" : "") + n; return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()); }
-  function kitRange(key) {
-    const now = new Date(), to = kitIso(now);
-    if (key === "today") return { from: to, to };
-    if (key === "7d") return { from: kitIso(new Date(now.getTime() - 6 * 86400000)), to };
-    if (key === "30d") return { from: kitIso(new Date(now.getTime() - 29 * 86400000)), to };
-    return { from: "", to: "" };
-  }
-  function kitRangeKey(from, to) {
-    if (!from && !to) return "all";
-    for (const k of ["today", "7d", "30d"]) { const r = kitRange(k); if (r.from === from && r.to === to) return k; }
-    return "custom";
-  }
-  function kitValidDate(v) {
-    const s = String(v || "").trim();
-    return !s || (/^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s + "T00:00:00")));
-  }
-  function KitSearchIcon(p) {
-    const h = React.createElement;
-    return h(RN.View, { style: { width: 18, height: 18 } },
-      h(RN.View, { style: { position: "absolute", left: 1, top: 1, width: 12, height: 12, borderRadius: 6, borderWidth: 2, borderColor: p.color } }),
-      h(RN.View, { style: { position: "absolute", left: 11, top: 13, width: 7, height: 2, borderRadius: 1, backgroundColor: p.color, transform: [{ rotate: "45deg" }] } }));
-  }
-  function KitChip(p) {
-    const C = palette(), h = React.createElement;
-    return h(RN.Pressable, { onPress: p.onPress, accessibilityRole: "button", accessibilityState: { selected: !!p.active }, hitSlop: 4,
-      style: ({ pressed }) => ({ height: 34, borderRadius: 17, paddingHorizontal: 14, marginRight: p.flush ? 0 : 8, marginBottom: p.flush ? 0 : 8, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: p.active ? C.blurple : C.chip, opacity: pressed ? 0.8 : 1 }) },
-      h(RN.Text, { numberOfLines: 1, style: { color: p.active ? "#FFFFFF" : C.text, fontSize: 14, fontWeight: "600" } }, p.label),
-      p.badge ? h(RN.View, { style: { marginLeft: 7, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5, backgroundColor: p.active ? "rgba(255,255,255,0.28)" : hexA(C.blurple, 0.22), alignItems: "center", justifyContent: "center" } },
-        h(RN.Text, { style: { color: p.active ? "#FFFFFF" : C.blurple, fontSize: 12, fontWeight: "800" } }, String(p.badge))) : null);
-  }
-  function KitFilter(p) {
-    const C = palette(), h = React.createElement;
-    const query = String(p.query || ""), from = String(p.from || ""), to = String(p.to || "");
-    const rangeKey = kitRangeKey(from, to);
-    const hasQuery = !!query.trim(), hasDates = !!(from || to), active = hasQuery || hasDates;
-    const [open, setOpen] = React.useState(!p.collapsible || active);
-    const [custom, setCustom] = React.useState(rangeKey === "custom");
-    const saved = Array.isArray(p.saved) ? p.saved : [];
-    const set = (patch) => p.onChange({ query, from, to, ...patch });
-    const label = (t) => h(RN.Text, { style: { color: C.sub, fontSize: 12, fontWeight: "700", letterSpacing: 0.3, marginTop: 14, marginBottom: 8 } }, t);
-    const dateBox = (name, key, value) => h(RN.View, { key, style: { flex: 1, marginRight: key === "from" ? 8 : 0 } },
-      h(RN.Text, { style: { color: C.sub, fontSize: 12, fontWeight: "600", marginBottom: 6 } }, name),
-      h(CustomInput, { value, placeholder: "YYYY-MM-DD", onChangeText: (v) => set({ [key]: v }), autoCorrect: false, autoCapitalize: "none", keyboardType: "numbers-and-punctuation", style: kitValidDate(value) ? { minHeight: 44 } : { minHeight: 44, borderColor: "#ED4245" } }));
-    const showBody = open || !p.collapsible;
-    const chips = [["all", "All time"], ["today", "Today"], ["7d", "7 days"], ["30d", "30 days"]];
-    return h(RN.View, { style: { marginBottom: 18 } },
-      h(RN.View, { style: { backgroundColor: C.card, borderRadius: 20, borderWidth: 1, borderColor: active ? hexA(C.blurple, 0.6) : C.card2, overflow: "hidden" } },
-        h(RN.View, { style: { flexDirection: "row", alignItems: "center", paddingLeft: 16, paddingRight: 8 } },
-          KitSearchIcon({ color: C.sub }),
-          h(RN.TextInput, { value: query, placeholder: p.placeholder || "Search author, channel, server or text", placeholderTextColor: C.sub, onChangeText: (v) => set({ query: v }), autoCorrect: false, autoCapitalize: "none", returnKeyType: "search", underlineColorAndroid: "transparent", style: { flex: 1, color: C.text, fontSize: 16, paddingVertical: 14, paddingHorizontal: 11 } }),
-          query ? h(RN.Pressable, { onPress: () => set({ query: "" }), hitSlop: 8, accessibilityLabel: "Clear search", style: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.chip, alignItems: "center", justifyContent: "center", marginRight: 6 } },
-            h(RN.Text, { style: { color: C.text, fontSize: 16, fontWeight: "700", marginTop: -1 } }, "\u00D7")) : null,
-          p.collapsible ? KitChip({ label: "Filters", flush: true, active: open, badge: hasDates ? 1 : 0, onPress: () => setOpen(!open) }) : null),
-        showBody ? h(RN.View, { style: { paddingHorizontal: 16, paddingBottom: 14, borderTopWidth: 1, borderTopColor: C.card2 } },
-          label("PERIOD"),
-          h(RN.View, { style: { flexDirection: "row", flexWrap: "wrap" } },
-            ...chips.map(([k, t]) => h(RN.View, { key: k }, KitChip({ label: t, active: !custom && rangeKey === k, onPress: () => { setCustom(false); set(kitRange(k)); } }))),
-            h(RN.View, { key: "custom" }, KitChip({ label: "Custom", active: custom || rangeKey === "custom", onPress: () => setCustom(true) }))),
-          (custom || rangeKey === "custom") ? h(RN.View, { style: { flexDirection: "row", marginBottom: 4 } }, dateBox("From", "from", from), dateBox("To", "to", to)) : null,
-          h(RN.View, { style: { flexDirection: "row", marginTop: 10 } },
-            h(RN.View, { style: { flex: 1, marginRight: 6 } }, h(CustomAction, { title: "Clear", secondary: true, compact: true, top: 0, disabled: !active, onPress: () => { setCustom(false); p.onChange({ query: "", from: "", to: "" }); } })),
-            h(RN.View, { style: { flex: 1, marginLeft: 6 } }, h(CustomAction, { title: "Save filter", compact: true, top: 0, disabled: !active || !p.onSave, onPress: () => p.onSave && p.onSave() }))),
-          label("SAVED FILTERS"),
-          saved.length ? h(RN.View, null, ...saved.map((item, i) => {
-            const bits = [item.query, (item.from || item.to) ? ((item.from || "…") + " → " + (item.to || "…")) : ""].filter(Boolean).join("  ·  ");
-            return h(RN.View, { key: "saved-" + i, style: { flexDirection: "row", alignItems: "center", backgroundColor: C.chip, borderRadius: 14, marginBottom: 8, overflow: "hidden" } },
-              h(RN.Pressable, { onPress: () => p.onApplySaved && p.onApplySaved(item), style: ({ pressed }) => ({ flex: 1, paddingVertical: 11, paddingHorizontal: 14, backgroundColor: pressed ? C.press : "transparent" }) },
-                h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 15, fontWeight: "700" } }, item.name || "Saved filter"),
-                bits ? h(RN.Text, { numberOfLines: 1, style: { color: C.sub, fontSize: 13, marginTop: 2 } }, bits) : null),
-              h(RN.Pressable, { onPress: () => p.onDeleteSaved && p.onDeleteSaved(i, item), hitSlop: 6, accessibilityLabel: "Delete saved filter", style: { width: 44, alignSelf: "stretch", alignItems: "center", justifyContent: "center" } },
-                h(RN.Text, { style: { color: C.sub, fontSize: 20, fontWeight: "600" } }, "\u00D7")));
-          })) : h(RN.Text, { style: { color: C.sub, fontSize: 13, lineHeight: 18 } }, "Nothing saved yet. Set up a search and tap Save filter to reuse it later.")) : null),
-      p.total != null ? h(RN.Text, { style: { color: active ? C.blurple : C.sub, fontSize: 13, fontWeight: "600", marginTop: 10, marginLeft: 8 } },
-        active ? (p.matches + " of " + p.total + " match") : (p.total + " in total")) : null);
-  }
-  function kitMenuPill(label) {
-    const C = palette(), h = React.createElement;
-    return h(RN.View, { style: { flexDirection: "row", alignItems: "center", backgroundColor: hexA(C.blurple, 0.16), borderRadius: 12, paddingHorizontal: 11, paddingVertical: 7, marginLeft: 6 } },
-      h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 13, fontWeight: "700", maxWidth: 130 } }, String(label || "Select")),
-      h(RN.View, { style: { marginLeft: 6 } }, KitChevron({ dir: "down", color: C.blurple, size: 7 })));
-  }
-  /* ---- end shared kit ---- */
-
+    const rules = [
+        [/translate|translation|google|deepl/, "↔"], [/language/, "文"], [/color|appearance/, "◉"],
+        [/clock|time|history|retention/, "◷"], [/cache|storage|persist|remember|restart/, "▣"],
+        [/deleted|delete/, "⌫"], [/edit/, "✎"], [/ignore/, "⊘"], [/mention|everyone|ping/, "@"],
+        [/reply/, "↩"], [/filter|search/, "⌕"], [/capture|message|channel|dm/, "▤"],
+        [/alert|notify|toast/, "!"], [/button|position|composer/, "+"], [/word|term/, "Aa"],
+        [/jump/, "↗"], [/test/, "▷"], [/server|guild/, "◇"], [/bot/, "◆"],
+        [/quick|favorite|saved/, "★"], [/clear|remove/, "×"], [/enabled|logger/, "●"]
+    ];
+    const match = rules.find(([pattern]) => pattern.test(text));
+    return match ? match[1] : "•";
+}
+function CustomRow(p){const C=palette(),h=React.createElement,icon=p.icon||settingIconForTitle(p.title);return h(RN.Pressable,{accessibilityRole:p.onPress?"button":undefined,onPress:p.onPress,disabled:!p.onPress,style:({pressed})=>({minHeight:58,paddingHorizontal:15,paddingVertical:12,flexDirection:"row",alignItems:"center",backgroundColor:pressed?C.press:"transparent"})},icon?h(RN.Text,{style:{width:30,fontSize:18,color:C.sub,marginRight:7,textAlign:"center"}},icon):null,h(RN.View,{style:{flex:1,minWidth:0,paddingRight:8}},h(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:16,fontWeight:"600"}},p.title),p.subtitle?h(RN.Text,{numberOfLines:2,style:{color:C.sub,fontSize:13,marginTop:3,lineHeight:18}},p.subtitle):null),p.trailing||null,!p.last?h(RN.View,{style:{position:"absolute",bottom:0,left:icon?52:15,right:0,height:1,backgroundColor:C.card2}}):null);}
+  function CustomSwitch(p){const C=palette(),on=!!p.value,pos=React.useRef(new RN.Animated.Value(on?1:0)).current;React.useEffect(()=>{RN.Animated.spring(pos,{toValue:on?1:0,speed:22,bounciness:3,useNativeDriver:true}).start();},[on]);return React.createElement(RN.Pressable,{accessibilityRole:"switch",accessibilityState:{checked:on},onPress:()=>p.onChange(!on),hitSlop:8,style:{width:48,height:29,borderRadius:16,padding:3,justifyContent:"center",backgroundColor:on?C.blurple:C.off}},React.createElement(RN.Animated.View,{style:{width:23,height:23,borderRadius:12,backgroundColor:"#FFFFFF",elevation:1,transform:[{translateX:pos.interpolate({inputRange:[0,1],outputRange:[0,19]})}]}}));}
+  function CustomAction(p){const C=palette();return React.createElement(RN.Pressable,{onPress:p.onPress,disabled:p.disabled,style:({pressed})=>({minHeight:48,borderRadius:13,alignItems:"center",justifyContent:"center",paddingHorizontal:16,marginTop:9,backgroundColor:p.secondary?C.chip:C.blurple,opacity:p.disabled?0.45:pressed?0.75:1})},React.createElement(RN.Text,{style:{color:"#FFFFFF",fontWeight:"700",fontSize:16}},p.title));}
+  function CustomInput(p){const C=palette();return React.createElement(RN.TextInput,{...p,placeholderTextColor:C.sub,style:[{minHeight:48,borderRadius:13,borderWidth:1,borderColor:C.off,backgroundColor:C.bg,color:C.text,paddingHorizontal:14,fontSize:16},p.style]});}
   function Settings() {
     rainStore.useStore();
     const [screen, setScreen] = React.useState("main");
     const screenProgress = React.useRef(new RN.Animated.Value(1)).current;
     React.useEffect(() => { screenProgress.setValue(0); RN.Animated.timing(screenProgress, { toValue: 1, duration: 180, useNativeDriver: true }).start(); }, [screen]);
+    const [filterReturn, setFilterReturn] = React.useState("deleted");
     const [limit, setLimit] = React.useState(PAGE);
     const [logFilter, setLogFilter] = React.useState({ query: "", from: "", to: "" });
     const [colorEditor, setColorEditor] = React.useState(null);
@@ -1679,6 +1596,53 @@ const implementation = (() => {
       if (typeof useNavigation === "function") settingsNavigation = useNavigation();
     } catch (_) {}
     const refreshUI = () => bump((x) => x + 1);
+    const F = {
+      TableRowGroup: settingsFormComponent("TableRowGroup"),
+      TableRow: settingsFormComponent("TableRow"),
+      TableSwitchRow: settingsFormComponent("TableSwitchRow"),
+      FormSection: settingsFormComponent("FormSection"),
+      FormRow: settingsFormComponent("FormRow"),
+      FormSwitchRow: settingsFormComponent("FormSwitchRow"),
+      FormSwitch: settingsFormComponent("FormSwitch"),
+      FormDivider: settingsFormComponent("FormDivider"),
+      FormInput: settingsFormComponent("FormInput"),
+    };
+    const nativeIconCache = new Map();
+    const settingIcon = (key, label) => {
+      const Icon = (F.TableRow && F.TableRow.Icon) || (F.FormRow && F.FormRow.Icon);
+      if (!Icon || !ui.assets || typeof ui.assets.getAssetIDByName !== "function") return undefined;
+      const cacheKey = String(key || "") + " " + String(label || "");
+      if (nativeIconCache.has(cacheKey)) return nativeIconCache.get(cacheKey);
+      const text = cacheKey.toLowerCase();
+      const patterns = /color|redname|namecolor/.test(text) ? [/paint_brush/i, /palette/i, /color/i]
+        : /separator/.test(text) ? [/more_vertical/i, /dots_vertical/i, /ellipsis_vertical/i, /more/i]
+        : /^(notifyedited|notify-edited)$/.test(String(key || "").toLowerCase()) ? [/edit/i, /pencil/i, /audit_update/i]
+        : /^(logdeleted|logedited)$/.test(String(key || "").toLowerCase()) ? [/eye_hidden/i, /visibility_off/i]
+        : /time|clock/.test(text) ? [/clock/i, /time/i]
+        : /deleted|delete/.test(text) ? [/eye_hidden/i, /delete/i, /trash/i]
+        : /edit|edited/.test(text) ? [/edit/i, /pencil/i, /audit_update/i]
+        : /ignore/.test(text) ? [/close_24px/i, /person/i, /ignore/i]
+        : /bot/.test(text) ? [/close_24px/i, /bot/i]
+        : /user/.test(text) ? [/person/i, /user/i]
+        : /color/.test(text) ? [/paint_brush/i, /color/i, /palette/i]
+        : /storage|save|persist|cache/.test(text) ? [/storage/i, /save/i, /database/i, /download/i]
+        : /search|filter/.test(text) ? [/search/i, /filter/i]
+        : /message|log/.test(text) ? [/message/i, /chat/i, /text/i]
+        : /server|channel/.test(text) ? [/server/i, /channel/i]
+        : null;
+      let icon = null;
+      try {
+        const names = Object.keys(ui.assets.all || {});
+        let name = null;
+        if (patterns) for (const pattern of patterns) { name = names.find((candidate) => pattern.test(candidate)); if (name) break; }
+        if (name) {
+          const source = ui.assets.getAssetIDByName(name);
+          if (source != null) icon = h(Icon, { source });
+        }
+      } catch (_) {}
+      nativeIconCache.set(cacheKey, icon || undefined);
+      return icon || undefined;
+    };
     const C = palette();
     const h = React.createElement;
 
@@ -1699,10 +1663,10 @@ const implementation = (() => {
     };
 
     const rowSet=new WeakSet(),sectionTitles=new WeakMap(),mark=(el)=>{rowSet.add(el);return el;},HEXCOLOR=/^#[0-9A-Fa-f]{6}$/;
-    const Text=(props,...kids)=>h(RN.Text,props,...kids);
+    const Text=(props,...kids)=>h(RN.Text,props,...kids),rowIcon=(key)=>/color/.test(key)?"\u25C9":/capture|cache|message|history|nav|log/.test(key)?"\u25F7":/filter|search/.test(key)?"\u2315":/ignore/.test(key)?"\u2298":"\u2726";
     const Section=(title)=>{const m=h(RN.View,{key:"sec-"+title});sectionTitles.set(m,title);return m;};
-    const valueChip=(r)=>{if(!r)return null;if(r===">"||r==="\u203A")return Text({style:{color:C.sub,fontSize:24,marginLeft:7,fontWeight:"300"}},"\u203A");const v=String(r);if(HEXCOLOR.test(v))return h(RN.View,{style:{flexDirection:"row",alignItems:"center",marginLeft:8}},h(RN.View,{style:{width:20,height:20,borderRadius:10,backgroundColor:v,borderWidth:1,borderColor:C.divider}}));return Text({style:{color:C.sub,fontSize:14,marginLeft:8},numberOfLines:1},v);};
-    const PressRow=(key,label,sub,onPress,right)=>mark(h(CustomRow,{key,title:label,subtitle:sub,onPress,noIcon:/^(logged-|ghost-history-|ignored-|saved-ping-filter-|filter-use-|filter-delete-)/.test(String(key)),trailing:(key==="capture-mode"||key==="retention")?kitMenuPill(right):valueChip(right)}));
+    const valueChip=(r)=>{if(!r)return null;if(r===">"||r==="\u203A")return Text({style:{color:C.sub,fontSize:21,marginLeft:7}},"\u203A");const v=String(r);if(HEXCOLOR.test(v))return h(RN.View,{style:{flexDirection:"row",alignItems:"center",marginLeft:8}},h(RN.View,{style:{width:20,height:20,borderRadius:10,backgroundColor:v,borderWidth:1,borderColor:C.divider}}));return Text({style:{color:C.sub,fontSize:14,marginLeft:8},numberOfLines:1},v);};
+    const PressRow=(key,label,sub,onPress,right)=>mark(h(CustomRow,{key,title:label,subtitle:sub,onPress,trailing:(key==="capture-mode"||key==="retention")?h(RN.View,{style:{flexDirection:"row",alignItems:"center",backgroundColor:C.chip,borderRadius:10,borderWidth:1,borderColor:C.blurple,paddingHorizontal:9,paddingVertical:6,marginLeft:6}},h(RN.Text,{numberOfLines:1,style:{color:C.text,fontSize:12,fontWeight:"700",maxWidth:120}},String(right||"Select")),h(RN.Text,{style:{color:C.blurple,fontSize:16,fontWeight:"800",marginLeft:5}},"⌄")):valueChip(right)}));
     const switchRow=(key,label,sub,value,change)=>mark(h(CustomRow,{key,title:label,subtitle:sub,trailing:h(CustomSwitch,{value,onChange:change})}));
     const Btn=(key,title,onPress,color)=>mark(h(CustomAction,{key,title:key==="back"?"\u2039  Back":title,onPress,secondary:key!=="clear"&&key!=="test",danger:color===RED}));
     const Empty=(key,t)=>Text({key,style:{color:C.sub,fontSize:14,lineHeight:20,paddingHorizontal:14,paddingVertical:14,textAlign:"center"}},t),Title=(key,t)=>Text({key,style:{color:C.text,fontSize:22,fontWeight:"800",paddingTop:8,paddingBottom:8}},t);
@@ -1713,9 +1677,15 @@ const implementation = (() => {
       return switchRow(key, label, sub, value, change);
     };
 
-    const back = () => Btn("back", "< Back", () => { setScreen("main"); refreshUI(); });
+    const back = () => Btn("back", "< Back", () => { setScreen(screen === "filters" ? filterReturn : "main"); refreshUI(); });
 
     const more = (total) => total > limit ? Btn("more", "Show more", () => setLimit(limit + PAGE)) : null;
+
+    const openLogFilters = () => {
+      setFilterReturn(screen);
+      setScreen("filters");
+      refreshUI();
+    };
 
     const saveCurrentLogFilter = () => {
       openNativeInputAlert({ id: "aml-filter-name", title: "Save filter", content: "Name this search", onSave: (name) => {
@@ -1818,12 +1788,7 @@ const implementation = (() => {
         return (!q || searchable.includes(q)) && (from === null || entry.at >= from) && (to === null || entry.at <= to);
       });
       const rows = [back(), Title("title", (isDel ? "Deleted messages" : "Edited messages") + " (" + filtered.length + ")"),
-        h(KitFilter, { key: "kit-filter", collapsible: true, query: logFilter.query, from: logFilter.from, to: logFilter.to, matches: filtered.length, total: entries.length,
-          saved: Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [],
-          onChange: (next) => { setLogFilter({ query: next.query, from: next.from, to: next.to }); setLimit(PAGE); },
-          onSave: saveCurrentLogFilter,
-          onApplySaved: (item) => { setLogFilter({ query: item.query || "", from: item.from || "", to: item.to || "" }); setLimit(PAGE); },
-          onDeleteSaved: (index, item) => ask("Delete saved filter?", item.name || "Saved filter", [{ text: "Delete", style: "destructive", onPress: () => { const latest = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : []; cfg().savedLogFilters = latest.filter((_, i) => i !== index); refreshUI(); } }]) })];
+        Btn("log-filters", "Search and filters", openLogFilters)];
       if (!filtered.length) rows.push(Empty("empty", entries.length ? "No messages match this filter." : "Nothing logged yet."));
       // Build each row in its own function scope, matching the ignored-list
       // renderer. This keeps the row identity and native press callback paired
@@ -1897,6 +1862,22 @@ const implementation = (() => {
         h(CustomSection,{key:"color-presets",title:"Color presets"},...presets.map(([label,hex],index)=>h(CustomRow,{key:"color-"+hex,title:label,last:index===presets.length-1,trailing:h(RN.View,{style:{flexDirection:"row",alignItems:"center",gap:10,marginRight:6}},h(RN.View,{style:{width:20,height:20,borderRadius:10,backgroundColor:hex}}),current===hex?h(RN.Text,{style:{color:C.blurple,fontWeight:"800",width:18,textAlign:"center"}},"✓"):h(RN.View,{style:{width:18}})),onPress:()=>applyColor(hex)}))),
         h(CustomAction,{key:"color-default",title:"Use default",secondary:true,onPress:()=>applyColor(colorEditor.defaultValue)})
       ];
+    } else if (screen === "filters") {
+      const saved = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [];
+      const updateFilter = (key, value) => setLogFilter((current) => ({ ...current, [key]: value }));
+      content = [Btn("back", "< Back", () => { setScreen(filterReturn); refreshUI(); }), Section("Search logs")];
+      const filterFields = [["query", "User, channel, server or message", "Search logged messages"], ["from", "From date", "YYYY-MM-DD"], ["to", "To date", "YYYY-MM-DD"]];
+      filterFields.forEach(([key, label, placeholder]) => content.push(mark(h(RN.View, { key: "filter-" + key, style: { paddingHorizontal: 14, paddingVertical: 9 } },
+        h(RN.Text, { style: { color: C.sub, fontSize: 12, fontWeight: "700", marginBottom: 7 } }, label),
+        h(CustomInput, { value: logFilter[key], placeholder, onChangeText: (value) => updateFilter(key, value), autoCorrect: false, autoCapitalize: "none" })))));
+      content.push(Section("Actions"), PressRow("filter-clear", "Clear search", "Remove all search terms and dates", () => { setLogFilter({ query: "", from: "", to: "" }); refreshUI(); }),
+        PressRow("filter-save", "Save current filter", "Save this search for later", saveCurrentLogFilter),
+        PressRow("filter-apply", "Apply and return", "Show matching messages", () => { setLimit(PAGE); setScreen(filterReturn); refreshUI(); }), Section("Saved filters"));
+      if (!saved.length) content.push(Empty("filter-empty", "No saved filters yet."));
+      saved.forEach((item, index) => {
+        content.push(PressRow("filter-use-" + index, item.name || "Saved filter", "Tap to apply this search", () => { setLogFilter({ query: item.query || "", from: item.from || "", to: item.to || "" }); setLimit(PAGE); setScreen(filterReturn); refreshUI(); }));
+        content.push(PressRow("filter-delete-" + index, "Delete " + (item.name || "saved filter"), "Remove this saved filter", () => ask("Delete saved filter?", item.name || "Saved filter", [{ text: "Delete", style: "destructive", onPress: () => { const latest = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : []; cfg().savedLogFilters = latest.filter((_, i) => i !== index); refreshUI(); } }])));
+      });
     }
     else if (screen === "deleted" || screen === "edited") content = loggedScreen(screen);
     else if (screen === "ignored") content = ignoredScreen();
@@ -1905,6 +1886,7 @@ const implementation = (() => {
       const ignoredCount = Object.keys(ig.guilds).length + Object.keys(ig.channels).length + Object.keys(ig.users).length;
       content = [
         Section("Logging"),
+        Switch("logDeleted", "Keep deleted messages", "Deleted messages stay visible in the selected color"),
         Switch("redName", "Color deleted usernames", "Apply a separate color to the sender's name", (v) => { cfg().redName = v; refreshStyledMessages(); refreshUI(); }),
         Switch("logEdited", "Keep edited messages", "Previous versions appear above the new text in the selected color"),
         Switch("persist", "Save across restarts", "Store logged messages on this device", (v) => { setPersist(v); refreshUI(); }),
@@ -1944,13 +1926,15 @@ const implementation = (() => {
       ];
     }
 
-    const helpFooter = screen === "main" ? h(KitGuide, { key: "settings-guide", title: "Quick guide", steps: [["How capture works","Messages Discord delivers to this device are kept in a small local cache while Remember new messages is on. That cache is how a deleted message can still be shown. Capture mode All records every event the app receives; Loaded only covers chats that are already loaded. Messages that never reached this device, or arrived while the app was closed, can't be recovered."],["Review what was logged","Open Deleted messages or Edited messages under Logs. Tap an entry to jump to it. Use the search bar and the Filters button to narrow by text, author, channel, server or date, and save the filters you reuse."],["Make changes stand out in chat","Deleted messages and the previous versions of edits are colored right in the chat. Choose the colors, username highlight and time labels under Display."],["Keep the noise out","Ignore servers, channels or users you don't care about, and skip bots or your own messages under Filters. Review or undo everything from Ignored items."],["Storage and privacy","Save across restarts is off by default, so logs are not kept after the app restarts unless you turn it on. Choose how long entries are kept; older ones are removed automatically, and you can clear everything at any time."]] }) : null;
-    const buildLabel = Text({ key: "build", style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1, opacity: 0.7 } }, "Advanced Message Logger " + BUILD);
-    const header = screen === "main" ? [h(KitHero, { key: "hero", icon: "chat", title: "Advanced Message Logger", subtitle: "Message history and capture preferences", stats: (() => { const ig = ignored(); return [["Deleted", deleted.size], ["Edited", edits.size], ["Ignored", Object.keys(ig.guilds).length + Object.keys(ig.channels).length + Object.keys(ig.users).length]]; })() })] : [];
+    const helpFooter = screen === "main" ? h(RN.View, { key: "settings-guide", style: { marginTop: 18, marginBottom: 12, padding: 16, borderRadius: 15, backgroundColor: C.card, borderWidth: 1, borderColor: C.card2 } }, Text({ style: { color: C.text, fontSize: 20, fontWeight: "800", marginBottom: 8 } }, "Quick guide"), h(RN.Text, { key: "guide-0", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 0 } }, "New messages are saved locally and remain available after a restart when message memory is enabled."), h(RN.Text, { key: "guide-1", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 5 } }, "Open History to review saved messages, edits, and deletions."), h(RN.Text, { key: "guide-2", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 5 } }, "Capture mode All records received messages; Loaded records messages from chats already loaded."), h(RN.Text, { key: "guide-3", style: { color: C.sub, fontSize: 15, lineHeight: 21, marginTop: 5 } }, "Use ignored servers, channels, and users to exclude specific conversations or people.")) : null;
+    const buildLabel = Text({ key: "build", style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1 } }, "Advanced Message Logger " + BUILD);
+    const header = screen === "main" ? [Text({ key: "header-title", style: { color: C.text, fontSize: 25, fontWeight: "800", marginBottom: 5 } }, "Advanced Message Logger"), Text({ key: "header-subtitle", style: { color: C.sub, fontSize: 14, marginBottom: 20 } }, "Message history and capture preferences")] : [];
     return h(RN.Animated.View, { style: { flex: 1, opacity: screenProgress, transform: [{ translateY: screenProgress.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }] } }, h(RN.ScrollView, { key: screen, style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 42 } }, ...header, ...compose(content), helpFooter, buildLabel));
   }
 
-  function onLoad() {
+  function initializeAfterHydration() {
+    if (!loadRequested || initialized) return;
+    initialized = true;
     dmAlertQueue.length = 0;
     dmAlertShowing = false;
     receivedThisSession = 0;
@@ -1964,13 +1948,6 @@ const implementation = (() => {
       notifyDeleted: false, notifyEdited: false,
     };
     for (const k of Object.keys(defaults)) if (s[k] === undefined) s[k] = defaults[k];
-    if (s.defaultsV2 !== 1) {
-      s.logEdited = true; s.redName = true; s.rememberReceivedMessages = true; s.skipOwn = true; s.skipBots = true;
-      s.captureMode = "expanded";
-      if (!(Number(s.maxCachedMessages) > 5000)) s.maxCachedMessages = DEFAULT_RAW_BUFFER;
-      s.defaultsV2 = 1;
-    }
-    s.logDeleted = true;
     if (s.captureModeDefaultMigration !== 1) { s.captureMode = "expanded"; s.captureModeDefaultMigration = 1; }
     if (s.maxCachedMessagesDefaultMigration !== 1) {
       if (Number(s.maxCachedMessages) === 500) s.maxCachedMessages = DEFAULT_RAW_BUFFER;
@@ -2030,9 +2007,25 @@ const implementation = (() => {
     } catch (_) {}
   }
 
+  function onLoad() {
+    loadRequested = true;
+    const store = rainStore.useStore;
+    if (store.getState()._hasHydrated) { initializeAfterHydration(); return; }
+    const checkHydration = (state) => {
+      if (!loadRequested || !state._hasHydrated) return;
+      if (hydrationUnsubscribe) hydrationUnsubscribe();
+      hydrationUnsubscribe = null;
+      initializeAfterHydration();
+    };
+    hydrationUnsubscribe = store.subscribe(checkHydration);
+    checkHydration(store.getState());
+  }
+
   function onUnload() {
-    for (const t of pendingTimers) clearTimeout(t);
-    pendingTimers.clear();
+    loadRequested = false;
+    if (hydrationUnsubscribe) { hydrationUnsubscribe(); hydrationUnsubscribe = null; }
+    if (!initialized) return;
+    initialized = false;
     dmAlertQueue.length = 0;
     dmAlertShowing = false;
     flush();

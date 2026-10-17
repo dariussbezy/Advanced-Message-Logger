@@ -17,7 +17,7 @@ const implementation = (() => {
   const MAX_LOGGED = 2000;
   const MAX_EDITED = 1000;
   const MAX_SAVED_RAW = 1000;
-  const DEFAULT_RAW_BUFFER = 5000;
+  const DEFAULT_RAW_BUFFER = 10000;
   const MIN_RAW_BUFFER = 100;
   const MAX_RAW_BUFFER = 20000;
   const MAX_RAW_SIZE = 20000;
@@ -1478,7 +1478,17 @@ const implementation = (() => {
     const C = palette(), h = React.createElement;
     const kids = React.Children.toArray(p.children);
     const any = kids.some((k) => k && k.type === CustomRow && kitIconKey(k.props));
-    const out = kids.map((k) => (k && k.type === CustomRow && any && !k.props.noIcon && !kitIconKey(k.props)) ? React.cloneElement(k, { __fallbackIcon: true }) : k);
+    const isAction = (k) => !!k && k.type === CustomAction;
+    if (kids.length && kids.every(isAction)) {
+      return h(RN.View, { style: { marginBottom: p.title ? 24 : 12 } },
+        p.title ? h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginHorizontal: 6, marginBottom: 10 } },
+          h(RN.View, { style: { width: 3, height: 14, borderRadius: 2, backgroundColor: C.blurple, marginRight: 8 } }),
+          h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 15, fontWeight: "700", flexShrink: 1 } }, p.title)) : null,
+        ...kids.map((k, i) => React.cloneElement(k, { top: i === 0 ? 0 : 10 })));
+    }
+    const out = kids.map((k, i) => isAction(k)
+      ? h(RN.View, { key: "act-" + i, style: { paddingHorizontal: 12, paddingTop: i === 0 ? 12 : 0, paddingBottom: 12 } }, React.cloneElement(k, { top: 0 }))
+      : (k && k.type === CustomRow && any && !k.props.noIcon && !kitIconKey(k.props)) ? React.cloneElement(k, { __fallbackIcon: true }) : k);
     return h(RN.View, { style: { marginBottom: p.compact ? 14 : 24 } },
       p.title ? h(RN.View, { style: { flexDirection: "row", alignItems: "center", marginHorizontal: 6, marginBottom: 10 } },
         h(RN.View, { style: { width: 3, height: 14, borderRadius: 2, backgroundColor: C.blurple, marginRight: 8 } }),
@@ -1490,11 +1500,8 @@ const implementation = (() => {
     const C = palette(), h = React.createElement;
     const key = p.__fallbackIcon ? (kitIconKey(p) || "gear") : kitIconKey(p);
     const tile = key ? KitTile({ k: key, size: 34 }) : null;
-    const tr = p.trailing;
-    const flip = !p.onPress && tr && tr.type === CustomSwitch && tr.props && typeof tr.props.onChange === "function" ? () => tr.props.onChange(!tr.props.value) : null;
-    const press = p.onPress || flip;
     return h(RN.Pressable, {
-      accessibilityRole: press ? "button" : undefined, onPress: press || undefined, disabled: !press,
+      accessibilityRole: p.onPress ? "button" : undefined, onPress: p.onPress, disabled: !p.onPress,
       style: ({ pressed }) => ({ minHeight: 66, paddingHorizontal: 16, paddingVertical: 13, flexDirection: "row", alignItems: "center", backgroundColor: pressed ? C.press : "transparent" })
     },
       tile,
@@ -1507,14 +1514,12 @@ const implementation = (() => {
   function CustomSwitch(p) {
     const C = palette(), h = React.createElement, on = !!p.value;
     const pos = React.useRef(new RN.Animated.Value(on ? 1 : 0)).current;
-    const col = React.useRef(new RN.Animated.Value(on ? 1 : 0)).current;
     React.useEffect(() => {
       RN.Animated.spring(pos, { toValue: on ? 1 : 0, speed: 24, bounciness: 5, useNativeDriver: true }).start();
-      RN.Animated.timing(col, { toValue: on ? 1 : 0, duration: 180, useNativeDriver: false }).start();
     }, [on]);
-    return h(RN.Pressable, { accessibilityRole: "switch", accessibilityState: { checked: on }, onPress: () => p.onChange(!on), hitSlop: 10 },
-      h(RN.Animated.View, { style: { width: 52, height: 32, borderRadius: 16, padding: 3, justifyContent: "center", backgroundColor: col.interpolate({ inputRange: [0, 1], outputRange: [C.off, p.color || C.blurple] }) } },
-        h(RN.Animated.View, { style: { width: 26, height: 26, borderRadius: 13, backgroundColor: "#FFFFFF", shadowColor: "#000000", shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2, transform: [{ translateX: pos.interpolate({ inputRange: [0, 1], outputRange: [0, 20] }) }] } })));
+    return h(RN.Pressable, { accessibilityRole: "switch", accessibilityState: { checked: on }, onPress: () => p.onChange(!on), hitSlop: 10,
+      style: { width: 52, height: 32, borderRadius: 16, padding: 3, justifyContent: "center", backgroundColor: on ? (p.color || C.blurple) : C.off } },
+      h(RN.Animated.View, { style: { width: 26, height: 26, borderRadius: 13, backgroundColor: "#FFFFFF", shadowColor: "#000000", shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2, transform: [{ translateX: pos.interpolate({ inputRange: [0, 1], outputRange: [0, 20] }) }] } }));
   }
   function CustomAction(p) {
     const C = palette(), h = React.createElement, RED_ = "#ED4245";
@@ -1523,8 +1528,8 @@ const implementation = (() => {
     const bg = p.danger ? (p.secondary ? hexA(RED_, 0.14) : RED_) : (p.secondary ? C.chip : C.blurple);
     const fg = p.danger && p.secondary ? RED_ : (p.secondary ? C.text : "#FFFFFF");
     return h(RN.Pressable, { onPress: p.onPress, disabled: p.disabled, onPressIn: () => to(0.97), onPressOut: () => to(1), accessibilityRole: "button" },
-      h(RN.Animated.View, { style: { minHeight: 50, borderRadius: 15, alignItems: "center", justifyContent: "center", paddingHorizontal: 18, marginTop: 10, backgroundColor: bg, opacity: p.disabled ? 0.45 : 1, transform: [{ scale: sc }] } },
-        h(RN.Text, { style: { color: fg, fontWeight: "700", fontSize: 16 } }, p.title)));
+      h(RN.Animated.View, { style: { minHeight: p.compact ? 42 : 50, borderRadius: 15, alignItems: "center", justifyContent: "center", paddingHorizontal: p.compact ? 12 : 18, marginTop: p.top != null ? p.top : 10, backgroundColor: bg, opacity: p.disabled ? 0.45 : 1, transform: [{ scale: sc }] } },
+        h(RN.Text, { numberOfLines: 1, style: { color: fg, fontWeight: "700", fontSize: p.compact ? 15 : 16 } }, p.title)));
   }
   function CustomInput(p) {
     const C = palette(), h = React.createElement;
@@ -1574,6 +1579,82 @@ const implementation = (() => {
             h(RN.Text, { style: { color: C.text, fontSize: 15, fontWeight: "700", marginBottom: 3 } }, s[0]),
             h(RN.Text, { style: { color: C.sub, fontSize: 14, lineHeight: 20 } }, s[1]))))) : null);
   }
+  function kitIso(d) { const z = (n) => (n < 10 ? "0" : "") + n; return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate()); }
+  function kitRange(key) {
+    const now = new Date(), to = kitIso(now);
+    if (key === "today") return { from: to, to };
+    if (key === "7d") return { from: kitIso(new Date(now.getTime() - 6 * 86400000)), to };
+    if (key === "30d") return { from: kitIso(new Date(now.getTime() - 29 * 86400000)), to };
+    return { from: "", to: "" };
+  }
+  function kitRangeKey(from, to) {
+    if (!from && !to) return "all";
+    for (const k of ["today", "7d", "30d"]) { const r = kitRange(k); if (r.from === from && r.to === to) return k; }
+    return "custom";
+  }
+  function kitValidDate(v) {
+    const s = String(v || "").trim();
+    return !s || (/^\d{4}-\d{2}-\d{2}$/.test(s) && !isNaN(Date.parse(s + "T00:00:00")));
+  }
+  function KitSearchIcon(p) {
+    const h = React.createElement;
+    return h(RN.View, { style: { width: 18, height: 18 } },
+      h(RN.View, { style: { position: "absolute", left: 1, top: 1, width: 12, height: 12, borderRadius: 6, borderWidth: 2, borderColor: p.color } }),
+      h(RN.View, { style: { position: "absolute", left: 11, top: 13, width: 7, height: 2, borderRadius: 1, backgroundColor: p.color, transform: [{ rotate: "45deg" }] } }));
+  }
+  function KitChip(p) {
+    const C = palette(), h = React.createElement;
+    return h(RN.Pressable, { onPress: p.onPress, accessibilityRole: "button", accessibilityState: { selected: !!p.active }, hitSlop: 4,
+      style: ({ pressed }) => ({ height: 34, borderRadius: 17, paddingHorizontal: 14, marginRight: p.flush ? 0 : 8, marginBottom: p.flush ? 0 : 8, flexDirection: "row", alignItems: "center", justifyContent: "center", backgroundColor: p.active ? C.blurple : C.chip, opacity: pressed ? 0.8 : 1 }) },
+      h(RN.Text, { numberOfLines: 1, style: { color: p.active ? "#FFFFFF" : C.text, fontSize: 14, fontWeight: "600" } }, p.label),
+      p.badge ? h(RN.View, { style: { marginLeft: 7, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5, backgroundColor: p.active ? "rgba(255,255,255,0.28)" : hexA(C.blurple, 0.22), alignItems: "center", justifyContent: "center" } },
+        h(RN.Text, { style: { color: p.active ? "#FFFFFF" : C.blurple, fontSize: 12, fontWeight: "800" } }, String(p.badge))) : null);
+  }
+  function KitFilter(p) {
+    const C = palette(), h = React.createElement;
+    const query = String(p.query || ""), from = String(p.from || ""), to = String(p.to || "");
+    const rangeKey = kitRangeKey(from, to);
+    const hasQuery = !!query.trim(), hasDates = !!(from || to), active = hasQuery || hasDates;
+    const [open, setOpen] = React.useState(!p.collapsible || active);
+    const [custom, setCustom] = React.useState(rangeKey === "custom");
+    const saved = Array.isArray(p.saved) ? p.saved : [];
+    const set = (patch) => p.onChange({ query, from, to, ...patch });
+    const label = (t) => h(RN.Text, { style: { color: C.sub, fontSize: 12, fontWeight: "700", letterSpacing: 0.3, marginTop: 14, marginBottom: 8 } }, t);
+    const dateBox = (name, key, value) => h(RN.View, { key, style: { flex: 1, marginRight: key === "from" ? 8 : 0 } },
+      h(RN.Text, { style: { color: C.sub, fontSize: 12, fontWeight: "600", marginBottom: 6 } }, name),
+      h(CustomInput, { value, placeholder: "YYYY-MM-DD", onChangeText: (v) => set({ [key]: v }), autoCorrect: false, autoCapitalize: "none", keyboardType: "numbers-and-punctuation", style: kitValidDate(value) ? { minHeight: 44 } : { minHeight: 44, borderColor: "#ED4245" } }));
+    const showBody = open || !p.collapsible;
+    const chips = [["all", "All time"], ["today", "Today"], ["7d", "7 days"], ["30d", "30 days"]];
+    return h(RN.View, { style: { marginBottom: 18 } },
+      h(RN.View, { style: { backgroundColor: C.card, borderRadius: 20, borderWidth: 1, borderColor: active ? hexA(C.blurple, 0.6) : C.card2, overflow: "hidden" } },
+        h(RN.View, { style: { flexDirection: "row", alignItems: "center", paddingLeft: 16, paddingRight: 8 } },
+          KitSearchIcon({ color: C.sub }),
+          h(RN.TextInput, { value: query, placeholder: p.placeholder || "Search author, channel, server or text", placeholderTextColor: C.sub, onChangeText: (v) => set({ query: v }), autoCorrect: false, autoCapitalize: "none", returnKeyType: "search", underlineColorAndroid: "transparent", style: { flex: 1, color: C.text, fontSize: 16, paddingVertical: 14, paddingHorizontal: 11 } }),
+          query ? h(RN.Pressable, { onPress: () => set({ query: "" }), hitSlop: 8, accessibilityLabel: "Clear search", style: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.chip, alignItems: "center", justifyContent: "center", marginRight: 6 } },
+            h(RN.Text, { style: { color: C.text, fontSize: 16, fontWeight: "700", marginTop: -1 } }, "\u00D7")) : null,
+          p.collapsible ? KitChip({ label: "Filters", flush: true, active: open, badge: hasDates ? 1 : 0, onPress: () => setOpen(!open) }) : null),
+        showBody ? h(RN.View, { style: { paddingHorizontal: 16, paddingBottom: 14, borderTopWidth: 1, borderTopColor: C.card2 } },
+          label("PERIOD"),
+          h(RN.View, { style: { flexDirection: "row", flexWrap: "wrap" } },
+            ...chips.map(([k, t]) => h(RN.View, { key: k }, KitChip({ label: t, active: !custom && rangeKey === k, onPress: () => { setCustom(false); set(kitRange(k)); } }))),
+            h(RN.View, { key: "custom" }, KitChip({ label: "Custom", active: custom || rangeKey === "custom", onPress: () => setCustom(true) }))),
+          (custom || rangeKey === "custom") ? h(RN.View, { style: { flexDirection: "row", marginBottom: 4 } }, dateBox("From", "from", from), dateBox("To", "to", to)) : null,
+          h(RN.View, { style: { flexDirection: "row", marginTop: 10 } },
+            h(RN.View, { style: { flex: 1, marginRight: 6 } }, h(CustomAction, { title: "Clear", secondary: true, compact: true, top: 0, disabled: !active, onPress: () => { setCustom(false); p.onChange({ query: "", from: "", to: "" }); } })),
+            h(RN.View, { style: { flex: 1, marginLeft: 6 } }, h(CustomAction, { title: "Save filter", compact: true, top: 0, disabled: !active || !p.onSave, onPress: () => p.onSave && p.onSave() }))),
+          label("SAVED FILTERS"),
+          saved.length ? h(RN.View, null, ...saved.map((item, i) => {
+            const bits = [item.query, (item.from || item.to) ? ((item.from || "…") + " → " + (item.to || "…")) : ""].filter(Boolean).join("  ·  ");
+            return h(RN.View, { key: "saved-" + i, style: { flexDirection: "row", alignItems: "center", backgroundColor: C.chip, borderRadius: 14, marginBottom: 8, overflow: "hidden" } },
+              h(RN.Pressable, { onPress: () => p.onApplySaved && p.onApplySaved(item), style: ({ pressed }) => ({ flex: 1, paddingVertical: 11, paddingHorizontal: 14, backgroundColor: pressed ? C.press : "transparent" }) },
+                h(RN.Text, { numberOfLines: 1, style: { color: C.text, fontSize: 15, fontWeight: "700" } }, item.name || "Saved filter"),
+                bits ? h(RN.Text, { numberOfLines: 1, style: { color: C.sub, fontSize: 13, marginTop: 2 } }, bits) : null),
+              h(RN.Pressable, { onPress: () => p.onDeleteSaved && p.onDeleteSaved(i, item), hitSlop: 6, accessibilityLabel: "Delete saved filter", style: { width: 44, alignSelf: "stretch", alignItems: "center", justifyContent: "center" } },
+                h(RN.Text, { style: { color: C.sub, fontSize: 20, fontWeight: "600" } }, "\u00D7")));
+          })) : h(RN.Text, { style: { color: C.sub, fontSize: 13, lineHeight: 18 } }, "Nothing saved yet. Set up a search and tap Save filter to reuse it later.")) : null),
+      p.total != null ? h(RN.Text, { style: { color: active ? C.blurple : C.sub, fontSize: 13, fontWeight: "600", marginTop: 10, marginLeft: 8 } },
+        active ? (p.matches + " of " + p.total + " match") : (p.total + " in total")) : null);
+  }
   function kitMenuPill(label) {
     const C = palette(), h = React.createElement;
     return h(RN.View, { style: { flexDirection: "row", alignItems: "center", backgroundColor: hexA(C.blurple, 0.16), borderRadius: 12, paddingHorizontal: 11, paddingVertical: 7, marginLeft: 6 } },
@@ -1587,7 +1668,6 @@ const implementation = (() => {
     const [screen, setScreen] = React.useState("main");
     const screenProgress = React.useRef(new RN.Animated.Value(1)).current;
     React.useEffect(() => { screenProgress.setValue(0); RN.Animated.timing(screenProgress, { toValue: 1, duration: 180, useNativeDriver: true }).start(); }, [screen]);
-    const [filterReturn, setFilterReturn] = React.useState("deleted");
     const [limit, setLimit] = React.useState(PAGE);
     const [logFilter, setLogFilter] = React.useState({ query: "", from: "", to: "" });
     const [colorEditor, setColorEditor] = React.useState(null);
@@ -1633,15 +1713,9 @@ const implementation = (() => {
       return switchRow(key, label, sub, value, change);
     };
 
-    const back = () => Btn("back", "< Back", () => { setScreen(screen === "filters" ? filterReturn : "main"); refreshUI(); });
+    const back = () => Btn("back", "< Back", () => { setScreen("main"); refreshUI(); });
 
     const more = (total) => total > limit ? Btn("more", "Show more", () => setLimit(limit + PAGE)) : null;
-
-    const openLogFilters = () => {
-      setFilterReturn(screen);
-      setScreen("filters");
-      refreshUI();
-    };
 
     const saveCurrentLogFilter = () => {
       openNativeInputAlert({ id: "aml-filter-name", title: "Save filter", content: "Name this search", onSave: (name) => {
@@ -1744,7 +1818,12 @@ const implementation = (() => {
         return (!q || searchable.includes(q)) && (from === null || entry.at >= from) && (to === null || entry.at <= to);
       });
       const rows = [back(), Title("title", (isDel ? "Deleted messages" : "Edited messages") + " (" + filtered.length + ")"),
-        Btn("log-filters", "Search and filters", openLogFilters)];
+        h(KitFilter, { key: "kit-filter", collapsible: true, query: logFilter.query, from: logFilter.from, to: logFilter.to, matches: filtered.length, total: entries.length,
+          saved: Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [],
+          onChange: (next) => { setLogFilter({ query: next.query, from: next.from, to: next.to }); setLimit(PAGE); },
+          onSave: saveCurrentLogFilter,
+          onApplySaved: (item) => { setLogFilter({ query: item.query || "", from: item.from || "", to: item.to || "" }); setLimit(PAGE); },
+          onDeleteSaved: (index, item) => ask("Delete saved filter?", item.name || "Saved filter", [{ text: "Delete", style: "destructive", onPress: () => { const latest = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : []; cfg().savedLogFilters = latest.filter((_, i) => i !== index); refreshUI(); } }]) })];
       if (!filtered.length) rows.push(Empty("empty", entries.length ? "No messages match this filter." : "Nothing logged yet."));
       // Build each row in its own function scope, matching the ignored-list
       // renderer. This keeps the row identity and native press callback paired
@@ -1818,22 +1897,6 @@ const implementation = (() => {
         h(CustomSection,{key:"color-presets",title:"Color presets"},...presets.map(([label,hex],index)=>h(CustomRow,{key:"color-"+hex,title:label,last:index===presets.length-1,trailing:h(RN.View,{style:{flexDirection:"row",alignItems:"center",gap:10,marginRight:6}},h(RN.View,{style:{width:20,height:20,borderRadius:10,backgroundColor:hex}}),current===hex?h(RN.Text,{style:{color:C.blurple,fontWeight:"800",width:18,textAlign:"center"}},"✓"):h(RN.View,{style:{width:18}})),onPress:()=>applyColor(hex)}))),
         h(CustomAction,{key:"color-default",title:"Use default",secondary:true,onPress:()=>applyColor(colorEditor.defaultValue)})
       ];
-    } else if (screen === "filters") {
-      const saved = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : [];
-      const updateFilter = (key, value) => setLogFilter((current) => ({ ...current, [key]: value }));
-      content = [Btn("back", "< Back", () => { setScreen(filterReturn); refreshUI(); }), Section("Search logs")];
-      const filterFields = [["query", "User, channel, server or message", "Search logged messages"], ["from", "From date", "YYYY-MM-DD"], ["to", "To date", "YYYY-MM-DD"]];
-      filterFields.forEach(([key, label, placeholder]) => content.push(mark(h(RN.View, { key: "filter-" + key, style: { paddingHorizontal: 14, paddingVertical: 9 } },
-        h(RN.Text, { style: { color: C.sub, fontSize: 12, fontWeight: "700", marginBottom: 7 } }, label),
-        h(CustomInput, { value: logFilter[key], placeholder, onChangeText: (value) => updateFilter(key, value), autoCorrect: false, autoCapitalize: "none" })))));
-      content.push(Section("Actions"), PressRow("filter-clear", "Clear search", "Remove all search terms and dates", () => { setLogFilter({ query: "", from: "", to: "" }); refreshUI(); }),
-        PressRow("filter-save", "Save current filter", "Save this search for later", saveCurrentLogFilter),
-        PressRow("filter-apply", "Apply and return", "Show matching messages", () => { setLimit(PAGE); setScreen(filterReturn); refreshUI(); }), Section("Saved filters"));
-      if (!saved.length) content.push(Empty("filter-empty", "No saved filters yet."));
-      saved.forEach((item, index) => {
-        content.push(PressRow("filter-use-" + index, item.name || "Saved filter", "Tap to apply this search", () => { setLogFilter({ query: item.query || "", from: item.from || "", to: item.to || "" }); setLimit(PAGE); setScreen(filterReturn); refreshUI(); }));
-        content.push(PressRow("filter-delete-" + index, "Delete " + (item.name || "saved filter"), "Remove this saved filter", () => ask("Delete saved filter?", item.name || "Saved filter", [{ text: "Delete", style: "destructive", onPress: () => { const latest = Array.isArray(cfg().savedLogFilters) ? cfg().savedLogFilters : []; cfg().savedLogFilters = latest.filter((_, i) => i !== index); refreshUI(); } }])));
-      });
     }
     else if (screen === "deleted" || screen === "edited") content = loggedScreen(screen);
     else if (screen === "ignored") content = ignoredScreen();
@@ -1842,7 +1905,6 @@ const implementation = (() => {
       const ignoredCount = Object.keys(ig.guilds).length + Object.keys(ig.channels).length + Object.keys(ig.users).length;
       content = [
         Section("Logging"),
-        Switch("logDeleted", "Keep deleted messages", "Deleted messages stay visible in the selected color"),
         Switch("redName", "Color deleted usernames", "Apply a separate color to the sender's name", (v) => { cfg().redName = v; refreshStyledMessages(); refreshUI(); }),
         Switch("logEdited", "Keep edited messages", "Previous versions appear above the new text in the selected color"),
         Switch("persist", "Save across restarts", "Store logged messages on this device", (v) => { setPersist(v); refreshUI(); }),
@@ -1882,7 +1944,7 @@ const implementation = (() => {
       ];
     }
 
-    const helpFooter = screen === "main" ? h(KitGuide, { key: "settings-guide", title: "Quick guide", steps: [["How capture works","Messages Discord delivers to this device are kept in a small local cache while Remember new messages is on. That cache is how a deleted message can still be shown. Capture mode All records every event the app receives; Loaded only covers chats that are already loaded. Messages that never reached this device, or arrived while the app was closed, can't be recovered."],["Review what was logged","Open Deleted messages or Edited messages under Logs. Tap an entry to jump to it, and use the search button to filter by author, channel, server, text or date. Save filters you use often."],["Make changes stand out in chat","Deleted messages and the previous versions of edits are colored right in the chat. Choose the colors, username highlight and time labels under Display."],["Keep the noise out","Ignore servers, channels or users you don't care about, and skip bots or your own messages under Filters. Review or undo everything from Ignored items."],["Storage and privacy","Save across restarts is off by default, so logs are not kept after the app restarts unless you turn it on. Choose how long entries are kept; older ones are removed automatically, and you can clear everything at any time."]] }) : null;
+    const helpFooter = screen === "main" ? h(KitGuide, { key: "settings-guide", title: "Quick guide", steps: [["How capture works","Messages Discord delivers to this device are kept in a small local cache while Remember new messages is on. That cache is how a deleted message can still be shown. Capture mode All records every event the app receives; Loaded only covers chats that are already loaded. Messages that never reached this device, or arrived while the app was closed, can't be recovered."],["Review what was logged","Open Deleted messages or Edited messages under Logs. Tap an entry to jump to it. Use the search bar and the Filters button to narrow by text, author, channel, server or date, and save the filters you reuse."],["Make changes stand out in chat","Deleted messages and the previous versions of edits are colored right in the chat. Choose the colors, username highlight and time labels under Display."],["Keep the noise out","Ignore servers, channels or users you don't care about, and skip bots or your own messages under Filters. Review or undo everything from Ignored items."],["Storage and privacy","Save across restarts is off by default, so logs are not kept after the app restarts unless you turn it on. Choose how long entries are kept; older ones are removed automatically, and you can clear everything at any time."]] }) : null;
     const buildLabel = Text({ key: "build", style: { color: C.sub, fontSize: 12, textAlign: "center", marginTop: 1, opacity: 0.7 } }, "Advanced Message Logger " + BUILD);
     const header = screen === "main" ? [h(KitHero, { key: "hero", icon: "chat", title: "Advanced Message Logger", subtitle: "Message history and capture preferences", stats: (() => { const ig = ignored(); return [["Deleted", deleted.size], ["Edited", edits.size], ["Ignored", Object.keys(ig.guilds).length + Object.keys(ig.channels).length + Object.keys(ig.users).length]]; })() })] : [];
     return h(RN.Animated.View, { style: { flex: 1, opacity: screenProgress, transform: [{ translateY: screenProgress.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }] } }, h(RN.ScrollView, { key: screen, style: { flex: 1 }, keyboardShouldPersistTaps: "handled", contentContainerStyle: { padding: 16, paddingBottom: 42 } }, ...header, ...compose(content), helpFooter, buildLabel));
@@ -1902,6 +1964,13 @@ const implementation = (() => {
       notifyDeleted: false, notifyEdited: false,
     };
     for (const k of Object.keys(defaults)) if (s[k] === undefined) s[k] = defaults[k];
+    if (s.defaultsV2 !== 1) {
+      s.logEdited = true; s.redName = true; s.rememberReceivedMessages = true; s.skipOwn = true; s.skipBots = true;
+      s.captureMode = "expanded";
+      if (!(Number(s.maxCachedMessages) > 5000)) s.maxCachedMessages = DEFAULT_RAW_BUFFER;
+      s.defaultsV2 = 1;
+    }
+    s.logDeleted = true;
     if (s.captureModeDefaultMigration !== 1) { s.captureMode = "expanded"; s.captureModeDefaultMigration = 1; }
     if (s.maxCachedMessagesDefaultMigration !== 1) {
       if (Number(s.maxCachedMessages) === 500) s.maxCachedMessages = DEFAULT_RAW_BUFFER;
